@@ -25,6 +25,7 @@ import { HumanMessage } from '@langchain/core/messages';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { submitAgentDecision, getOperatorKey, createHederaClient } from '@tradeagent/hedera';
 import { createAgentKit, getPythPrice } from './hederaKit';
+import { executeTradeSignal } from './tradeExecutor';
 import type { AgentConfig } from './promptBuilder';
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -171,70 +172,61 @@ Return ONLY valid JSON in this exact format:
 
   console.log(`[AgentRunner] Decision: ${decision.signal} (confidence: ${decision.confidence}%) — ${decision.reasoning}`);
 
-  // ── Step 4: HCS Write — BEFORE ANY TRADE ⚠️ ──────────────────
-  // This is the CRITICAL invariant. The aBFT consensus timestamp on this
-  // message PROVES the decision was made before any trade execution.
-  // Mirror Node becomes the immutable audit trail for the leaderboard.
-  console.log(`\n[AgentRunner] Step 4: ⚠️  Writing to HCS BEFORE trade execution...`);
+  // ── Step 4: executeTradeSignal (handles HCS + Execution + HCS Result)
+  console.log(`\n[AgentRunner] Step 4: Routing to tradeExecutor...`);
+  
+  const amountTinybars = await calculatePositionSize(
+    agentConfig.risk.maxPositionSizePct || 5, // fallback 5%
+    price
+  );
 
-  const hcsResult = await submitAgentDecision(client, hcsTopicId, {
-    agentId:    agentConfig.agentId,
-    signal:     decision.signal,
-    price:      decision.price,
+  const { hcsResult, tradeResult, mode } = await executeTradeSignal({
+    signal: decision.signal,
+    asset: agentConfig.asset,
+    amountTinybars,
+    agentId: agentConfig.agentId,
+    hcsTopicId,
     confidence: decision.confidence,
-    reasoning:  decision.reasoning,
+    reasoning: decision.reasoning,
+    price,
     indicators: decision.indicators,
-    timestamp:  new Date().toISOString(),
+    hederaClient: client,
   });
-
-  console.log(`[AgentRunner] ✅ HCS written! seq#${hcsResult.sequenceNumber} — ${hcsResult.consensusTimestamp}`);
-
-  // ── Step 5: SaucerSwap Execution (only if BUY or SELL) ────────
-  let swapExecuted = false;
-
-  if (decision.signal !== 'HOLD') {
-    if (dryRun) {
-      console.log(`[AgentRunner] Step 5: DRY RUN — would execute ${decision.signal} on SaucerSwap`);
-    } else {
-      console.log(`[AgentRunner] Step 5: Executing ${decision.signal} on SaucerSwap...`);
-
-      const [baseToken, quoteToken] = agentConfig.asset.split('/');
-      const swapInstruction = decision.signal === 'BUY'
-        ? `On SaucerSwap: get a swap quote for converting USDC to ${baseToken}. Check if price impact is under 1%. If yes, execute the swap. Max slippage: 1%.`
-        : `On SaucerSwap: get a swap quote for converting ${baseToken} to ${quoteToken}. Check if price impact is under 1%. If yes, execute the swap. Max slippage: 1%.`;
-
-      try {
-        const swapResult = await agent.invoke({
-          messages: [new HumanMessage(swapInstruction)],
-        });
-
-        const swapMsgs = swapResult.messages ?? [];
-        const swapLast = swapMsgs[swapMsgs.length - 1];
-        const swapContent = typeof swapLast?.content === 'string'
-          ? swapLast.content
-          : JSON.stringify(swapLast?.content ?? '');
-
-        console.log(`[AgentRunner] ✅ SaucerSwap result: ${swapContent.slice(0, 200)}`);
-        swapExecuted = true;
-      } catch (err) {
-        console.error('[AgentRunner] SaucerSwap execution failed:', err);
-        // Don't throw — the HCS record is already committed
-      }
-    }
-  } else {
-    console.log('[AgentRunner] Step 5: HOLD — no swap execution');
-  }
 
   const cycleMs = Date.now() - cycleStart;
 
   console.log(`\n[AgentRunner] ═══════════════════════════════════`);
   console.log(`[AgentRunner] Cycle complete in ${cycleMs}ms`);
-  console.log(`[AgentRunner] Signal: ${decision.signal} | HCS seq#${hcsResult.sequenceNumber} | Swap: ${swapExecuted}`);
+  console.log(`[AgentRunner] Mode: ${mode}`);
+  console.log(`[AgentRunner] HCS seq: #${hcsResult.sequenceNumber}`);
+  console.log(`[AgentRunner] Swap Executed: ${!!tradeResult}`);
   console.log(`[AgentRunner] ═══════════════════════════════════\n`);
 
   client.close();
 
-  return { decision, hcsResult, swapExecuted, cycleMs };
+  return { 
+    decision, 
+    hcsResult: { ...hcsResult, topicId: hcsTopicId }, 
+    swapExecuted: !!tradeResult, 
+    cycleMs 
+  };
+}
+
+// Calculate how many tinybars to trade based on position size %
+async function calculatePositionSize(
+  maxPositionPct: number,
+  priceUSD: number
+): Promise<bigint> {
+  const accountId = process.env.OPERATOR_ACCOUNT_ID!;
+  if (!accountId) return 0n;
+  
+  const res = await fetch(`https://testnet.mirrornode.hedera.com/api/v1/accounts/${accountId}`);
+  const data = (await res.json()) as any;
+  const balanceTinybars = BigInt(data.balance?.balance ?? 0);
+  
+  // maxPositionPct % of balance, capped at 20%
+  const pct = Math.min(maxPositionPct, 20);
+  return (balanceTinybars * BigInt(pct)) / 100n;
 }
 
 // ── extractPrice (utility used by agentRunner internally) ─────────
