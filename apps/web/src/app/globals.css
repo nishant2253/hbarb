@@ -1,0 +1,203 @@
+@import url('https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;500;600;700&family=Orbitron:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap');
+
+@import "tailwindcss";
+
+/* ── TradeAgent Design System ─────────────────────────────────── */
+/* Based on ui-ux-pro-max output: Web3 + Fintech + AI category   */
+/* Style: Dark Glassmorphism | bg: #0A0A0F | Primary: #00A9BA     */
+
+:root {
+  /* Brand */
+  --ta-teal:      #00A9BA;
+  --ta-teal-dim:  rgba(0,169,186,0.15);
+  --ta-teal-glow: rgba(0,169,186,0.35);
+  --ta-gold:      #F59E0B;
+  --ta-blue:      #1565C0;
+
+  /* Backgrounds */
+  --ta-bg:        #0A0A0F;
+  --ta-bg-card:   #0D1B2A;
+  --ta-bg-card2:  #111827;
+  --ta-bg-card3:  #1C2333;
+  --ta-bg-glass:  rgba(13,27,42,0.6);
+
+  /* Borders */
+  --ta-border:    rgba(255,255,255,0.08);
+  --ta-border-hi: rgba(0,169,186,0.4);
+
+  /* Text */
+  --ta-text:      #E2E8F0;
+  --ta-text-muted: #64748B;
+  --ta-text-dim:  #94A3B8;
+
+  /* Effects */
+  --ta-blur:      backdrop-filter: blur(16px);
+  --ta-shadow:    0 8px 32px rgba(0,0,0,0.4);
+  --ta-glow:      0 0 20px rgba(0,169,186,0.3);
+
+  /* Fonts */
+  --font-display: 'Orbitron', monospace;
+  --font-body:    'Exo 2', 'Inter', sans-serif;
+}
+
+/* ── Base layer resets (scoped so Tailwind utilities override) ─── */
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    background-color: var(--ta-bg);
+    color: var(--ta-text);
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+    min-height: 100vh;
+  }
+}
+
+/* ── Glass Card Base ───────────────────────────────────────────── */
+.glass {
+  background: var(--ta-bg-glass);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--ta-border);
+  border-radius: 16px;
+}
+
+.glass-card {
+  background: rgba(13, 27, 42, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  transition: border-color 200ms ease, box-shadow 200ms ease, transform 200ms ease;
+}
+
+.glass-card:hover {
+  border-color: var(--ta-border-hi);
+  box-shadow: var(--ta-glow);
+}
+
+/* ── Teal Glow ─────────────────────────────────────────────────── */
+.teal-glow {
+  box-shadow: 0 0 20px rgba(0,169,186,0.3), 0 0 40px rgba(0,169,186,0.15);
+}
+
+.teal-text {
+  color: var(--ta-teal);
+}
+
+.teal-gradient {
+  background: linear-gradient(135deg, var(--ta-teal) 0%, var(--ta-blue) 100%);
+}
+
+/* ── Orbitron Display Font — use .ta-font-display to avoid Tailwind conflict ── */
+.ta-font-display,
+.font-display {
+  font-family: var(--font-display) !important;
+  letter-spacing: 0.05em;
+}
+
+/* ── Badge — HCS Verified ──────────────────────────────────────── */
+.badge-hcs {
+  background: rgba(0,169,186,0.15);
+  color: var(--ta-teal);
+  border: 1px solid rgba(0,169,186,0.3);
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+/* ── Signal badges ─────────────────────────────────────────────── */
+.badge-buy  { background: rgba(16,185,129,0.15); color: #10B981; border: 1px solid rgba(16,185,129,0.3); }
+.badge-sell { background: rgba(239,68,68,0.15);  color: #EF4444; border: 1px solid rgba(239,68,68,0.3); }
+.badge-hold { background: rgba(234,179,8,0.15);  color: #EAB308; border: 1px solid rgba(234,179,8,0.3); }
+
+/* ── Scrollbar ─────────────────────────────────────────────────── */
+::-webkit-scrollbar       { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: var(--ta-bg); }
+::-webkit-scrollbar-thumb { background: rgba(0,169,186,0.3); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--ta-teal); }
+
+/* ── Focus ring ────────────────────────────────────────────────── */
+*:focus-visible {
+  outline: 2px solid var(--ta-teal);
+  outline-offset: 2px;
+}
+
+/* ── Reduce motion ─────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── Gradient text ─────────────────────────────────────────────── */
+.gradient-text {
+  background: linear-gradient(135deg, var(--ta-teal) 0%, #60A5FA 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ── Shimmer animation (loading) ───────────────────────────────── */
+@keyframes shimmer {
+  0%   { background-position: -1000px 0; }
+  100% { background-position: 1000px 0; }
+}
+
+.shimmer {
+  background: linear-gradient(90deg, rgba(255,255,255,0.03) 25%, rgba(255,255,255,0.07) 50%, rgba(255,255,255,0.03) 75%);
+  background-size: 1000px 100%;
+  animation: shimmer 2s infinite linear;
+}
+
+/* ── Pulse (live indicator) ────────────────────────────────────── */
+@keyframes pulse-ring {
+  0%   { transform: scale(0.8); opacity: 1; }
+  80%  { transform: scale(2); opacity: 0; }
+  100% { transform: scale(2); opacity: 0; }
+}
+
+.live-dot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.live-dot::before {
+  content: '';
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: var(--ta-teal);
+  animation: pulse-ring 1.5s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+}
+
+/* ── Grid pattern bg (canvas area) ────────────────────────────── */
+.grid-pattern {
+  background-image:
+    linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* ── ReactFlow dark theme overrides ────────────────────────────── */
+.react-flow__background { background: #07090E; }
+.react-flow__controls button {
+  background: var(--ta-bg-card2);
+  border: 1px solid var(--ta-border);
+  color: var(--ta-text-dim);
+}
+.react-flow__controls button:hover { background: var(--ta-bg-card3); }
+.react-flow__minimap { background: var(--ta-bg-card2); }
+.react-flow__edge-path { stroke: var(--ta-teal); opacity: 0.5; }

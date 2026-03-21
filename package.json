@@ -1,0 +1,24 @@
+{
+  "name": "tradeagent",
+  "version": "1.0.0",
+  "description": "AI-Powered Trading Agent Platform on Hedera Blockchain — Hedera APEX Hackathon 2026",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=apps/api",
+    "dev:web": "npm run dev --workspace=apps/web",
+    "dev:api": "npm run dev --workspace=apps/api",
+    "build": "npm run build --workspaces",
+    "build:contracts": "npm run compile --workspace=packages/contracts",
+    "deploy:native": "npm run deploy:native --workspace=packages/contracts",
+    "test": "npm run test --workspaces --if-present",
+    "install:all": "npm install"
+  },
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  }
+}

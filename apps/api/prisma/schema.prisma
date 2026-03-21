@@ -1,0 +1,87 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL") // Supabase connection string
+}
+
+// ── Agent Model ──────────────────────────────────────────────────
+// Mirrors the on-chain AgentRegistry.sol struct.
+// configHash links to on-chain record. hcsTopicId is the audit trail.
+
+model Agent {
+  id              String      @id @default(uuid())
+  name            String
+  ownerId         String      // Hedera account ID (0.0.XXXXX)
+  ownerEvm        String?     // EVM address for HSCS contract calls
+
+  // Agent configuration
+  config          Json        // Full AgentConfig object
+  configHash      String      // keccak256 of config JSON — matches on-chain hash
+  strategyType    String      // TREND_FOLLOW | MEAN_REVERT | BREAKOUT | MOMENTUM | SWING | CUSTOM
+
+  // Hedera identifiers
+  hcsTopicId      String      // aBFT audit topic: "0.0.4823901"
+  hfsConfigId     String?     // HFS file ID for on-chain config storage
+  contractTxId    String?     // Hedera tx ID of HSCS registration
+  hcs10TopicId    String?     // OpenConvAI inbound topic for inter-agent messaging
+
+  // Status
+  active          Boolean     @default(true)
+
+  // Marketplace
+  listed          Boolean     @default(false)
+  serialNumber    Int?        // HTS NFT serial number if listed
+  ipfsCID         String?     // IPFS metadata CID (HIP-412)
+  priceHbar       Float?      // Marketplace listing price in HBAR
+
+  // Timestamps
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  // Relations
+  executions      Execution[]
+
+  @@index([ownerId])
+  @@index([hcsTopicId])
+  @@index([listed])
+}
+
+// ── Execution Model ──────────────────────────────────────────────
+// Cache of agent execution results (source of truth is HCS Mirror Node).
+// Used for fast dashboard queries — NOT the authoritative record.
+
+model Execution {
+  id                    String    @id @default(uuid())
+  agentId               String
+
+  // AI Decision
+  signal                String    // BUY | SELL | HOLD
+  price                 Float
+  confidence            Int       // 0-100
+  reasoning             String
+
+  // HCS proof (the trust primitive)
+  hcsSequenceNumber     String    // Sequence number in the agent's HCS topic
+  consensusTimestamp    String    // aBFT consensus timestamp (ISO string)
+
+  // Trade execution
+  swapTxId              String?   // SaucerSwap transaction ID (if BUY/SELL)
+  fillPrice             Float?    // Actual fill price on SaucerSwap
+  slippage              Float?    // Actual slippage %
+
+  // Timestamps  
+  createdAt             DateTime  @default(now())
+
+  // Relations
+  agent                 Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId])
+  @@index([signal])
+  @@index([createdAt])
+}
