@@ -193,7 +193,7 @@ HBAR and tUSDC balances change in real wallets — not simulated.
 | Transaction Audit Log (/wallet) | ✅ Complete |
 | Rich HCS Execution History | ✅ Complete |
 | HCS-10 OpenConvAI registration (background) | ✅ Complete |
-| Marketplace listing UI (agent dashboard) | ✅ Complete |
+| Marketplace listing UI (HashPack association + operator mint) | ✅ Complete |
 | Marketplace buyer flow (associate + atomic swap + clone) | ✅ Complete |
 | 5% royalty — Hedera HTS protocol-enforced | ✅ Complete |
 | Wallet rehydration (no re-prompt on refresh) | ✅ Complete |

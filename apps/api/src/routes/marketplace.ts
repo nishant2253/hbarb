@@ -261,7 +261,7 @@ router.post('/post-purchase', async (req: Request, res: Response) => {
         name:           `${original.name} (Copy)`,
         ownerId:        buyerAccountId,
         ownerEvm:       '',
-        config:         original.config,
+        config:         original.config ?? {},
         configHash:     original.configHash,
         strategyType:   original.strategyType,
         hcsTopicId:     newHcsTopic,
@@ -276,7 +276,7 @@ router.post('/post-purchase', async (req: Request, res: Response) => {
 
     // 4. Schedule BullMQ job for the cloned agent
     const { scheduleAgentJob } = await import('../agent/agentWorker');
-    await scheduleAgentJob(newAgentId);
+    await scheduleAgentJob(newAgentId, newHcsTopic);
 
     client.close();
 

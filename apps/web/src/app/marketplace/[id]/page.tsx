@@ -181,7 +181,8 @@ export default function MarketplaceDetailPage({ params }: { params: Promise<{ id
     );
   }
 
-  const buySell = listing.recentSignals.reduce((acc, s) => {
+  const signals = listing.recentSignals ?? [];
+  const buySell = signals.reduce((acc, s) => {
     if (s.signal === 'BUY')  acc.buy++;
     if (s.signal === 'SELL') acc.sell++;
     return acc;
@@ -283,7 +284,7 @@ export default function MarketplaceDetailPage({ params }: { params: Promise<{ id
           </motion.div>
 
           {/* Recent signals */}
-          {listing.recentSignals.length > 0 && (
+          {signals.length > 0 && (
             <motion.div
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
@@ -292,7 +293,7 @@ export default function MarketplaceDetailPage({ params }: { params: Promise<{ id
             >
               <h2 className="font-semibold text-sm mb-4" style={{ color: '#E2E8F0' }}>Recent HCS Signals</h2>
               <div className="flex gap-2 flex-wrap">
-                {listing.recentSignals.slice(0, 20).map((s, i) => {
+                {signals.slice(0, 20).map((s, i) => {
                   const colors: Record<string, { bg: string; color: string }> = {
                     BUY:  { bg: 'rgba(16,185,129,0.12)', color: '#10B981' },
                     SELL: { bg: 'rgba(239,68,68,0.12)',  color: '#EF4444' },

@@ -12,6 +12,10 @@ import {
 
 import { TradeApprovalModal } from '@/components/TradeApprovalModal';
 import { useWalletStore } from '@/stores/walletStore';
+import { TokenAssociateTransaction, TokenId, AccountId, Hbar } from '@hashgraph/sdk';
+
+const STRATEGY_TOKEN_ID =
+  process.env.NEXT_PUBLIC_STRATEGY_TOKEN_ID || '0.0.8316389';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
 const NETWORK  = process.env.NEXT_PUBLIC_HEDERA_NETWORK || 'testnet';
@@ -117,7 +121,7 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
   const [listingResult, setListingResult] = useState<{ serialNumber: number; tokenId: string } | null>(null);
   const [delisting,     setDelisting]     = useState(false);
 
-  const { accountId } = useWalletStore();
+  const { accountId, signer } = useWalletStore();
 
   useEffect(() => {
     Promise.all([
@@ -183,8 +187,32 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
 
   async function listOnMarketplace() {
     if (!agent || !listingPrice || parseFloat(listingPrice) <= 0) return;
+    if (!signer || !accountId) {
+      alert('Please connect your wallet first.');
+      return;
+    }
     setListingStatus('loading');
     try {
+      // ── Step 1: Associate strategy NFT token with the owner's wallet ──
+      // HashPack will show a popup so the user explicitly approves the association.
+      // This is required before the operator can transfer the minted NFT to this account.
+      const strategyTokenId = TokenId.fromString(STRATEGY_TOKEN_ID);
+      const ownerAcctId     = AccountId.fromString(accountId);
+      try {
+        const assocTx = await new TokenAssociateTransaction()
+          .setAccountId(ownerAcctId)
+          .setTokenIds([strategyTokenId])
+          .setMaxTransactionFee(new Hbar(2))
+          .freezeWithSigner(signer);
+        const assocResp = await assocTx.executeWithSigner(signer);
+        await assocResp.getReceiptWithSigner(signer);
+      } catch (assocErr: any) {
+        if (!assocErr?.message?.includes('TOKEN_ALREADY_ASSOCIATED')) {
+          throw assocErr;
+        }
+      }
+
+      // ── Step 2: Backend mints the NFT (operator-signed) and transfers to owner ──
       const res = await fetch(`${API_URL}/api/marketplace/list`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },

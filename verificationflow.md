@@ -228,9 +228,10 @@ Navigate to `/wallet`. Below the live HCS Signal Feed:
 
 1. Go to agent dashboard → **NFT Marketplace** section (only shown to owner)
 2. Enter price in HBAR → click **List as NFT**
-3. Backend mints an HTS NFT (strategy token `0.0.8316389`) with 5% royalty
-4. Serial number and HashScan link appear after success
-5. Agent appears at `/marketplace` with provable stats from Mirror Node
+3. **HashPack popup 1** — "Associate strategy NFT token" (one-time, max 2 HBAR fee) — approve it
+4. Backend mints an HTS NFT (strategy token `0.0.8316389`) with 5% royalty and transfers to your wallet
+5. Serial number and HashScan link appear after success
+6. Agent appears at `/marketplace` with provable stats from Mirror Node
 
 ### Buying a strategy (buyer)
 
@@ -276,7 +277,7 @@ Navigate to `/wallet`. Below the live HCS Signal Feed:
 | Agent Portfolio card | ✅ Working | Live HBAR + tUSDC balance, P&L %, Withdraw All |
 | Withdraw All | ✅ Working | Operator-signed back to owner |
 | TRADE_SWAP audit log | ✅ Working | Visible in /wallet with HashScan links |
-| Marketplace listing UI | ✅ Working | Price input + "List as NFT" on agent dashboard |
+| Marketplace listing UI | ✅ Working | Price input + "List as NFT" — HashPack association popup + operator mint |
 | Marketplace post-purchase | ✅ Working | Clones agent for buyer, new HCS topic, BullMQ job |
 | NFT buyer association | ✅ Working | TokenAssociateTransaction before atomic swap |
 | 5% royalty | ✅ Working | HTS CustomRoyaltyFee, protocol-enforced |
@@ -302,3 +303,5 @@ Navigate to `/wallet`. Below the live HCS Signal Feed:
 | BUY shows "Contract ID: 0.0.0" | Frontend env var `NEXT_PUBLIC_MOCK_DEX_ADDRESS` not loaded — restart Next.js |
 | `tUSDC allowance failed` | Token not associated with wallet — reconnect to trigger association |
 | MockDEX swap fails silently | Check contract address matches `0.0.8332937` — old contract is deprecated |
+| Marketplace page crashes on open | `recentSignals` null from API — fixed with `?? []` fallback in `marketplace/[id]/page.tsx` |
+| "List as NFT" shows no HashPack popup | Fixed — `TokenAssociateTransaction` now fires before backend mint; wallet must be connected |

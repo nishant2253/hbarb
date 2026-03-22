@@ -238,6 +238,24 @@ Each deployed agent is registered in the Hedera HCS-10 OpenConvAI standard:
 
 ---
 
+### Enhancement 14. Marketplace Detail Page — Safe `recentSignals` Guard
+**Files changed:** `apps/web/src/app/marketplace/[id]/page.tsx`
+
+**What changed:** The `buySell` computation (and signal history list render) now uses `const signals = listing.recentSignals ?? []` as a safe fallback. Previously the page crashed with `TypeError: Cannot read properties of undefined (reading 'reduce')` whenever an agent had no prior trade history (API returned `recentSignals: null` or omitted the field). All three usages of `listing.recentSignals` were migrated to the `signals` local variable.
+
+---
+
+### Enhancement 15. "List as NFT" — User-Signed Token Association (HashPack Popup)
+**Files changed:** `apps/web/src/app/agents/[agentId]/page.tsx`
+
+**What changed:** `listOnMarketplace()` now has a mandatory user-signed step before the operator mints:
+1. **`TokenAssociateTransaction`** for the strategy NFT token (max fee: 2 HBAR) → triggers a HashPack popup so the user explicitly approves and sees the gas cost
+2. **Backend mint + transfer** — operator mints an NFT and transfers it to the now-associated owner wallet
+
+The `TokenId`, `AccountId`, and `Hbar` SDK classes were imported into `agents/[agentId]/page.tsx` and `signer` was extracted from `useWalletStore`. The association step silently skips if the account is already associated (`TOKEN_ALREADY_ASSOCIATED` error is caught and ignored).
+
+---
+
 ## Upcoming / Planned
 
 - [ ] Mainnet deployment: replace MockDEX with live SaucerSwap + HAK plugin

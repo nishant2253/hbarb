@@ -141,3 +141,23 @@ const response = await new TopicMessageSubmitTransaction()
 **Symptom:** After redeploying `MockDEX.sol` v2 (with real HTS precompile calls), the TradeApprovalModal produced `INSUFFICIENT_GAS` errors. Gas of 300,000 was sufficient for the old simulated MockDEX but not for the new one that calls HTS precompile (0x167) for token transfers.
 **Root Cause:** HTS precompile calls inside `executeSwap` (real tUSDC transfers via `IHederaTokenService.transferToken`) consume significantly more gas than the old reserve-only MockDEX.
 **Resolution:** Gas limit increased to `800,000` in `TradeApprovalModal.tsx` (already set; confirmed sufficient). Backend `tradeExecutor.ts` also uses `800000` gas and `1200 gwei` gas price.
+
+### 22. `TypeError: Cannot read properties of undefined (reading 'reduce')` on Marketplace Detail Page
+**Symptom:** Navigating to `/marketplace/[id]` (clicking "View" on any listed agent) threw a React render crash: `TypeError: Cannot read properties of undefined (reading 'reduce')`.
+**Root Cause:** `MarketplaceDetailPage` computed `buySell` by calling `listing.recentSignals.reduce(...)` directly. When the API response returns `recentSignals` as `null` or omits the field entirely (no prior trade signals), `.reduce` is called on `undefined`, crashing the render.
+**Resolution:** Added a safe fallback in `apps/web/src/app/marketplace/[id]/page.tsx`:
+```typescript
+const signals = listing.recentSignals ?? [];
+const buySell = signals.reduce((acc, s) => { ... }, { buy: 0, sell: 0 });
+```
+All three usages of `listing.recentSignals` (reduce, `.length > 0`, `.slice`) were updated to use the `signals` local variable.
+
+### 23. "List as NFT" Had No HashPack Popup — Silent Backend-Only Call
+**Symptom:** Clicking "List as NFT" on the agent dashboard called the backend silently with no user-visible wallet interaction. The operator minted the NFT, but the user never approved anything in HashPack, and the NFT could not be transferred to their account (TOKEN_NOT_ASSOCIATED).
+**Root Cause:** `listOnMarketplace()` in `agents/[agentId]/page.tsx` made a direct `fetch()` POST to `/api/marketplace/list` with no prior `TokenAssociateTransaction`, so:
+1. The user saw no HashPack popup
+2. HTS could not transfer the minted NFT to the owner's account (not associated)
+**Resolution:** Added a two-step flow to `listOnMarketplace()`:
+1. **User signs `TokenAssociateTransaction`** for `NEXT_PUBLIC_STRATEGY_TOKEN_ID` → HashPack popup appears with gas fees
+2. **Backend call** — operator mints NFT and transfers to the now-associated wallet
+If the wallet is already associated, the `TOKEN_ALREADY_ASSOCIATED` error is silently caught and the flow continues to the backend call.
