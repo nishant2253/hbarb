@@ -249,9 +249,10 @@ router.post('/post-purchase', async (req: Request, res: Response) => {
     }
 
     // 2. Create a new HCS topic for the buyer (operator pays — background tx)
-    const client     = createHederaClient();
-    const newAgentId = require('crypto').randomUUID();
-    const newHcsTopic = await createAgentTopic(client, newAgentId);
+    const client      = createHederaClient();
+    const operatorKey = getOperatorKey();
+    const newAgentId  = require('crypto').randomUUID();
+    const newHcsTopic = await createAgentTopic(client, newAgentId, operatorKey);
 
     // 3. Clone agent in DB with buyer as new owner
     const cloned = await prisma.agent.create({

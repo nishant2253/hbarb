@@ -28,7 +28,8 @@ The `hashpackEthers.ts` ethers signer bridge is permanently incompatible with `D
 | Call | Location | Gas | Max Fee |
 |------|----------|-----|---------|
 | `AgentRegistry.registerAgent()` (deploy TX3) | `create/page.tsx` | 800,000 | 5 HBAR |
-| `MockDEX.executeSwap()` (manual trade) | `TradeApprovalModal.tsx` | 300,000 | 2 HBAR |
+| `MockDEX.executeSwap()` (manual trade SELL) | `TradeApprovalModal.tsx` | 800,000 | 5 HBAR |
+| `MockDEX.executeSwap()` (manual trade BUY step 2) | `TradeApprovalModal.tsx` | 800,000 | 5 HBAR |
 
 **Read-only calls** (`getSwapQuote`) continue to use `ethers.JsonRpcProvider` + `ethers.Contract` directly against Hashio — no wallet needed for reads.
 
@@ -132,20 +133,101 @@ HCS Execution History panel on agent dashboard now shows:
 
 ---
 
-## 10. MockDEX Integration (Testnet)
-**Status:** ✅ Complete
+## 10. MockDEX v2 — Real HTS Token Transfers
+**Status:** ✅ Complete (deployed testnet: MockDEX `0.0.8332937`, tUSDC `0.0.8332870`)
 
-`MockDEX.sol` provides a native AMM (x*y=k) for testnet:
-- Uses Hedera Exchange Rate Precompile (0x168) for HBAR/USD pricing
-- Uses HTS Precompile (0x167) for token transfers
-- `sellHBARforUSDT(agentId, minOut, hcsSeq, topicId)` — caller sends HBAR as `msg.value`
-- `buyHBARwithUSDT(agentId, usdtIn, minHBAROut, hcsSeq, topicId)` — pulls tUSDT via HTS allowance
-- Embeds HCS sequence number in `SwapExecuted` events — cryptographically links AI decision to trade
-- Enforces 1% max slippage on all swaps
+`MockDEX.sol` v2 unified `executeSwap` with real on-chain token movement:
+
+| Direction | Behaviour |
+|-----------|-----------|
+| `HBAR_TO_USDC` (SELL) | Caller sends real HBAR as `msg.value`; contract calls HTS precompile `transferToken(tUSDC, contract→caller, amount)` — real tUSDC arrives in caller's wallet |
+| `USDC_TO_HBAR` (BUY) | Caller grants HTS allowance; contract calls `transferToken(tUSDC, caller→contract, amount)` — real HBAR sent back via `payable(msg.sender).call{value}` |
+
+**Key components:**
+- Uses HTS Precompile (0x167) for `transferToken` — Hedera-exclusive
+- Uses Exchange Rate Precompile (0x168) for HBAR/USD on-chain pricing
+- `getSwapQuote(direction, amountIn)` — AMM x*y=k read-only, no signing
+- `refreshReserves(newHBAR, newUSDC)` — operator syncs pool to market price
+- `associateTUSDC()` — one-time admin call to associate contract with HTS token
+- `SwapExecuted` event embeds `hcsSequenceNum` — cryptographic proof chain
+
+**Deploy script** (`deployMockDEX.ts`) fully automated:
+1. Creates tUSDC HTS fungible token (1M supply, 6 decimals)
+2. Deploys MockDEX via `ContractCreateFlow` (Hedera-native)
+3. `TokenAssociateTransaction` to associate tUSDC with MockDEX account
+4. Funds with 100 HBAR + 10,000 tUSDC for pool liquidity
+5. Seeds reserves to ~$0.089/HBAR
+6. Auto-updates `apps/api/.env` and `apps/web/.env.local`
 
 ---
 
-## 11. HCS-10 OpenConvAI Registration
+## 11. Live SaucerSwap Price Feed + MockDEX Reserve Sync
+**Status:** ✅ Complete
+
+Every agent cycle now:
+1. Fetches HBAR price from Pyth (primary) via Agent Kit
+2. Cross-checks with SaucerSwap REST API (`https://api.saucerswap.finance/tokens/`) — the live DEX
+3. If Pyth/SaucerSwap diverge by >5%, uses SaucerSwap (on-chain DEX price is ground truth)
+4. Calls `syncMockDexReserves(priceUSD)` — updates MockDEX pool via `refreshReserves()` so `getSwapQuote()` returns accurate quotes
+
+Both prices are logged to console for transparency:
+```
+[HederaKit] Pyth price for HBAR/USDC: $0.089621
+[SaucerSwap] DEX market price: $0.089534
+[MockDEX] Pool synced: $0.0895/HBAR
+```
+
+---
+
+## 12. TradeApprovalModal — Live Quote + Real Swap Flow
+**Status:** ✅ Complete
+
+**Live quote preview** (no signing required):
+- Fetches `getSwapQuote(direction, amount)` via `ethers.JsonRpcProvider` on mount
+- Shows "You send: X HBAR / You receive: ~Y tUSDC" with pool price and price impact %
+- Loading skeleton while quote fetches
+
+**SELL path** (`HBAR_TO_USDC`):
+- `ContractExecuteTransaction.setPayableAmount(Hbar.fromTinybars(amount))` sends real HBAR
+- tUSDC arrives in wallet after confirmation
+
+**BUY path** (`USDC_TO_HBAR`) — 2-step flow:
+- **Step 1/2**: `AccountAllowanceApproveTransaction.addTokenAllowance(tUSDCTokenId, mockDexId, amount)` → HashPack "Allow tUSDC spend"
+- **Step 2/2**: `ContractExecuteTransaction` for `executeSwap` → HashPack "Execute swap"
+- Progress bar UI shows current step
+
+**Balance refresh** restored after success — Mirror Node now reflects real token movement.
+
+---
+
+## 13. NFT Marketplace — Full Buyer + Seller Flow
+**Status:** ✅ Complete
+
+### Seller (agent owner) — "List as NFT" section on agent dashboard
+- Price input (HBAR) + "List as NFT" button
+- Calls `POST /api/marketplace/list` → mints HTS NFT via `mintAgentNFT()`
+- Shows serial number, HashScan link, delist button
+- 5% royalty enforced at Hedera protocol level (HIP-412 `CustomRoyaltyFee`) — impossible to bypass
+
+### Buyer — `/marketplace/[id]` buy flow (3 steps)
+1. **Associate** strategy NFT token with buyer's wallet (`TokenAssociateTransaction`) — auto-skipped if already associated
+2. **Atomic swap**: `TransferTransaction` (HBAR from buyer → seller, NFT from seller → buyer) — 5% royalty auto-deducted by HTS
+3. **Clone agent**: `POST /api/marketplace/post-purchase` creates a working copy for buyer:
+   - New HCS topic for buyer's audit trail
+   - New DB row with `buyerAccountId` as owner
+   - New BullMQ job scheduled
+   - Returns `clonedAgentId` → frontend redirects to buyer's agent dashboard
+
+### Backend `POST /api/marketplace/post-purchase`
+- Finds original agent by `serialNumber`
+- Clones to new agent ID with buyer as owner
+- Creates new HCS topic (operator-signed)
+- Schedules BullMQ cron job
+- Auto-redirects buyer to their new agent in 3 seconds
+
+---
+
+## 14. HCS-10 OpenConvAI Registration
 **Status:** ✅ Complete (background)
 
 Each deployed agent is registered in the Hedera HCS-10 OpenConvAI standard:
@@ -161,6 +243,5 @@ Each deployed agent is registered in the Hedera HCS-10 OpenConvAI standard:
 - [ ] Mainnet deployment: replace MockDEX with live SaucerSwap + HAK plugin
 - [ ] Agent settings page: change risk params, adjust timeframe, pause/resume
 - [ ] Portfolio dashboard: aggregate P&L across all agents
-- [ ] Marketplace buyer flow: atomic HTS NFT swap with HBAR
 - [ ] Notification system: alert user when MANUAL trade approval is pending
 - [ ] Encrypt `agentAccountPrivateKey` at rest (AES-256 with operator master key)

@@ -96,10 +96,13 @@ export async function submitAgentDecision(
     timestamp: decision.timestamp,
   });
 
+  // TopicMessageSubmitTransaction.execute() internally calls executeAll() which
+  // requires the transaction to be frozen first — freezeWith(client) is mandatory.
   const response = await new TopicMessageSubmitTransaction()
     .setTopicId(TopicId.fromString(topicId))
     .setMessage(message)
     .setMaxTransactionFee(new Hbar(1))
+    .freezeWith(client)
     .execute(client);
 
   const receipt = await response.getReceipt(client);

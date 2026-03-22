@@ -109,3 +109,35 @@ This document tracks bugs encountered during the TradeAgent development lifecycl
 **Symptom:** Linter reported `File '.../packages/hedera/src/index.ts' is not under 'rootDir' '.../apps/api/src'` on every file that imported `@tradeagent/hedera` or `@tradeagent/shared` in the API.
 **Root Cause:** `apps/api/tsconfig.json` set `rootDir: "src"`, but `paths` mapped `@tradeagent/hedera` and `@tradeagent/shared` to files in `packages/*/src`, which is outside `apps/api/src`. When TypeScript resolved these aliases it included the package files in the compilation, violating the `rootDir` constraint.
 **Resolution:** Changed `rootDir: "src"` → `rootDir: "../.."` (workspace root) and added `packages/shared/src/**/*` and `packages/hedera/src/**/*` to the `include` array in `apps/api/tsconfig.json`. The `outDir: "dist"` still functions correctly; `ts-node` dev mode is unaffected.
+
+### 19. `TopicMessageSubmitTransaction` Always Requires `freezeWith(client)` — HCS Decisions Skipped
+**Symptom:** Every `Run Trade` cycle prints `[HCS] ■ Decision logging failed — SKIPPING TRADE` with:
+```
+Error: transaction must have been frozen before calculating the hash will be stable, try calling `freeze`
+  at TopicMessageSubmitTransaction._requireFrozen
+  at TopicMessageSubmitTransaction.signWithOperator
+  at TopicMessageSubmitTransaction.executeAll
+  at TopicMessageSubmitTransaction.execute
+  at submitAgentDecision (hcs.ts:105)
+```
+**Root Cause:** The Hedera SDK's `TopicMessageSubmitTransaction.execute()` internally always calls `executeAll()` (line 320 of the SDK CJS bundle). `executeAll()` calls `signWithOperator()` which calls `signWith()` which calls `_requireFrozen()`. Unlike most other transactions, `TopicMessageSubmitTransaction` does NOT auto-freeze before executing — `freezeWith(client)` must be called explicitly by the caller.
+A previous "fix" that removed `freezeWith(client)` was incorrect; it appeared to work for short messages in some SDK versions but is fundamentally broken.
+**Resolution:** Added `.freezeWith(client)` between `.setMaxTransactionFee()` and `.execute(client)` in `submitAgentDecision` in `packages/hedera/src/hcs.ts`:
+```typescript
+const response = await new TopicMessageSubmitTransaction()
+  .setTopicId(TopicId.fromString(topicId))
+  .setMessage(message)
+  .setMaxTransactionFee(new Hbar(1))
+  .freezeWith(client)   // ← required for TopicMessageSubmitTransaction
+  .execute(client);
+```
+
+### 20. `createAgentTopic` Called with Missing `operatorKey` in `post-purchase` Route
+**Symptom:** `POST /api/marketplace/post-purchase` would throw a TypeScript/runtime error: `Expected 3 arguments, but got 2` when trying to clone an agent for a buyer.
+**Root Cause:** `marketplace.ts` called `createAgentTopic(client, newAgentId)` with only 2 arguments, but the function signature in `hcs.ts` is `createAgentTopic(client, agentId, operatorKey)`.
+**Resolution:** Added `const operatorKey = getOperatorKey()` and passed it as the third argument: `createAgentTopic(client, newAgentId, operatorKey)` in `marketplace.ts`.
+
+### 21. MockDEX Real HTS Transfers — `INSUFFICIENT_GAS` on `executeSwap` After v2 Deploy
+**Symptom:** After redeploying `MockDEX.sol` v2 (with real HTS precompile calls), the TradeApprovalModal produced `INSUFFICIENT_GAS` errors. Gas of 300,000 was sufficient for the old simulated MockDEX but not for the new one that calls HTS precompile (0x167) for token transfers.
+**Root Cause:** HTS precompile calls inside `executeSwap` (real tUSDC transfers via `IHederaTokenService.transferToken`) consume significantly more gas than the old reserve-only MockDEX.
+**Resolution:** Gas limit increased to `800,000` in `TradeApprovalModal.tsx` (already set; confirmed sufficient). Backend `tradeExecutor.ts` also uses `800000` gas and `1200 gwei` gas price.

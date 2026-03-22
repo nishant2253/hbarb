@@ -1,6 +1,6 @@
 # TradeAgent — Verification & Post-Deployment Flow
 
-**Last verified:** March 22, 2026 | Status: ✅ Full deployment confirmed working end-to-end
+**Last verified:** March 23, 2026 | Status: ✅ Full deployment confirmed working end-to-end
 
 ---
 
@@ -31,7 +31,7 @@ HashPack wallet must be connected to **Hedera Testnet** with at least **2 HBAR**
 4. **Verify:** Top nav shows your account ID (e.g., `0.0.8321325`) and live HBAR balance
 
 **Auto-rehydration:** On page refresh, your wallet reconnects silently — no HashPack prompt.
-Expected: tUSDT association prompt fires automatically on first connect (~0.001 HBAR).
+Expected: tUSDC association prompt fires automatically on first connect (~0.001 HBAR).
 
 ---
 
@@ -135,14 +135,21 @@ From the agent dashboard at `/agents/[agentId]`:
 ### Trigger a cycle manually
 
 1. Click **Run Trade** (disabled in AUTO mode — cron runs automatically)
-2. Backend fetches live HBAR price + computes EMA/RSI from Binance 1h candles
-3. Gemini 2.5 Flash generates BUY/SELL/HOLD citing actual indicator values
-4. HCS logs the decision with aBFT timestamp (before any swap)
-5. If BUY or SELL in MANUAL mode → **Trade Approval Modal** appears → sign in HashPack
-6. tUSDT balance updates in the top nav within ~5s
+2. Backend fetches live HBAR price from Pyth, cross-checks with SaucerSwap DEX price
+3. MockDEX pool reserves synced automatically to match current market price
+4. Gemini 2.5 Flash generates BUY/SELL/HOLD citing actual EMA/RSI values
+5. HCS logs the decision with aBFT timestamp (before any swap)
+6. If BUY or SELL in MANUAL mode → **Trade Approval Modal** appears:
+   - Shows live quote: "You send X HBAR / You receive ~Y tUSDC"
+   - **SELL**: one HashPack approval (HBAR sent, tUSDC received)
+   - **BUY**: two HashPack approvals (Step 1: allow tUSDC spend; Step 2: execute swap)
+7. Real tUSDC/HBAR balance updates in the wallet after confirmation
 
 **Expected backend logs:**
 ```
+[HederaKit] Pyth price for HBAR/USDC: $0.089621
+[SaucerSwap] DEX market price: $0.089534
+[MockDEX] Pool synced: $0.0895/HBAR
 [AgentRunner] Step 2b: Computing technical indicators...
 [AgentRunner] Indicators: {"price":0.0897,"EMA_60":0.08843,"RSI_14":52.3,"price_vs_ma_pct":1.43}
 
@@ -215,19 +222,36 @@ Navigate to `/wallet`. Below the live HCS Signal Feed:
 
 ---
 
-## Step 11 — Marketplace Listing (Optional)
+## Step 11 — NFT Marketplace (Listing & Buying)
 
-Once your agent has 7+ executions logged to HCS:
+### Listing your agent (seller)
 
-1. Go to agent dashboard → click **List on Marketplace**
-2. Set price in HBAR
-3. HashPack fires for HTS NFT minting (~0.01 HBAR)
-4. Your agent appears at `/marketplace` with provable win-rate from Mirror Node
-5. Buyers can atomic-swap HBAR for the strategy NFT in a single HashPack approval
+1. Go to agent dashboard → **NFT Marketplace** section (only shown to owner)
+2. Enter price in HBAR → click **List as NFT**
+3. Backend mints an HTS NFT (strategy token `0.0.8316389`) with 5% royalty
+4. Serial number and HashScan link appear after success
+5. Agent appears at `/marketplace` with provable stats from Mirror Node
+
+### Buying a strategy (buyer)
+
+1. Browse `/marketplace` → click on a listed agent
+2. Click **Buy Strategy NFT** → 3 steps:
+   - **Step 1**: Associate strategy NFT token (one-time HashPack popup)
+   - **Step 2**: Atomic swap — HBAR → NFT, 5% royalty auto-deducted by Hedera
+   - **Step 3**: Backend clones agent for you + creates new HCS topic
+3. Auto-redirected to your new agent dashboard with working copy ready
+
+**5% royalty** is enforced at the Hedera HTS protocol level — impossible to bypass on any secondary marketplace.
 
 ---
 
 ## Current Deployment Status (Verified)
+
+**Deployed contracts (testnet):**
+- AgentRegistry: `0.0.8316308`
+- MockDEX v2: `0.0.8332937` (EVM: `0x00000000000000000000000000000000007f2689`)
+- tUSDC token: `0.0.8332870`
+- Strategy NFT collection: `0.0.8316389`
 
 | Component | Status | Details |
 |-----------|--------|---------|
@@ -235,25 +259,29 @@ Once your agent has 7+ executions logged to HCS:
 | HFS FileCreate | ✅ Working | User signs, user pays ~0.05 HBAR |
 | HCS TopicCreate | ✅ Working | User signs, user pays ~0.11 HBAR |
 | HSCS registerAgent | ✅ Working | ContractExecuteTransaction, 800k gas |
-| Agent account creation | ✅ Working | ECDSA account created per agent, tUSDT auto-associated |
+| Agent account creation | ✅ Working | ECDSA account per agent, tUSDC auto-associated |
 | Fund Agent modal | ✅ Working | TransferTransaction via HashPack (1 sig, one-time) |
 | finalize-deploy | ✅ Working | DB + BullMQ instant (~50ms response) |
 | HCS-10 registration | ✅ Working | Background fire-and-forget (~60s) |
-| Agent page redirect | ✅ Working | Instant after TX3 + fund step |
-| EMA/RSI computation | ✅ Working | Fetches 80 Binance 1h candles, computes live |
-| Real BUY/SELL signals | ✅ Working | Gemini receives actual indicator values |
-| Run Trade button | ✅ Working | Disabled in AUTO mode; triggers full cycle in MANUAL |
+| EMA/RSI computation | ✅ Working | 80 Binance 1h candles, live indicators |
+| Real BUY/SELL signals | ✅ Working | Gemini cites actual EMA/RSI values |
+| SaucerSwap price feed | ✅ Working | Cross-checks Pyth; uses DEX price on >5% divergence |
+| MockDEX reserve sync | ✅ Working | Pool updated each cycle to match market price |
+| HCS decision logging | ✅ Fixed | `freezeWith(client)` required for `TopicMessageSubmitTransaction` |
+| Run Trade button | ✅ Working | Disabled in AUTO mode; full cycle in MANUAL |
 | Test Run (no swap) | ✅ Working | HCS log only, no MockDEX call |
-| TradeApprovalModal | ✅ Working | HashPack swap, tUSDT lands in user's wallet |
-| AUTO mode agent trading | ✅ Working | Agent account key signs MockDEX calls autonomously |
-| Agent Portfolio card | ✅ Working | Live HBAR + tUSDT balance, P&L %, Withdraw All |
-| Withdraw All | ✅ Working | Operator-signed transfer back to owner, no extra signing |
-| TRADE_SWAP audit log | ✅ Working | Saved to Transaction model, visible in /wallet |
-| Transaction Audit Log | ✅ Working | /wallet shows all HashPack-approved txs with HashScan links |
-| HCS history SWAP DONE | ✅ Working | Execution result entries with tx hash, amounts, slippage |
-| Wallet rehydration | ✅ Working | Silent reconnect on page refresh, first-click connect |
+| TradeApprovalModal SELL | ✅ Working | Live quote + setPayableAmount, real tUSDC received |
+| TradeApprovalModal BUY | ✅ Working | 2-step: allowance → swap, real HBAR received |
+| AUTO mode agent trading | ✅ Working | Agent ECDSA key signs autonomously |
+| Agent Portfolio card | ✅ Working | Live HBAR + tUSDC balance, P&L %, Withdraw All |
+| Withdraw All | ✅ Working | Operator-signed back to owner |
+| TRADE_SWAP audit log | ✅ Working | Visible in /wallet with HashScan links |
+| Marketplace listing UI | ✅ Working | Price input + "List as NFT" on agent dashboard |
+| Marketplace post-purchase | ✅ Working | Clones agent for buyer, new HCS topic, BullMQ job |
+| NFT buyer association | ✅ Working | TokenAssociateTransaction before atomic swap |
+| 5% royalty | ✅ Working | HTS CustomRoyaltyFee, protocol-enforced |
+| Wallet rehydration | ✅ Working | Silent reconnect on page refresh |
 | BullMQ scheduling | ✅ Working | Cron based on agent timeframe |
-| MockDEX ABI | ✅ Fixed | Uses correct functions + direction strings matching Solidity |
 
 ---
 
@@ -261,14 +289,16 @@ Once your agent has 7+ executions logged to HCS:
 
 | Error | Fix |
 |-------|-----|
-| `INSUFFICIENT_GAS` on TX3 | Gas already set to 800,000 — should not occur |
-| `User rejected` | User clicked Reject in HashPack — retry deploy |
+| `INSUFFICIENT_GAS` on TX3 | Gas set to 800,000 — should not occur |
+| `INSUFFICIENT_GAS` on swap | New MockDEX v2 needs 800k gas (HTS precompile calls) — already set |
+| `User rejected` | User clicked Reject in HashPack — retry |
 | Stuck on "Finalizing..." | Check API terminal — should resolve in <5s |
-| Agent page 404 after redirect | Check DB insert succeeded in API logs |
+| HCS `transaction must be frozen` | Fixed — `freezeWith(client)` added to `submitAgentDecision` in `hcs.ts` |
 | HCS topic shows 0 messages | Normal — trigger first cycle with Run Trade |
-| tUSDT not appearing in HashPack | Must use MANUAL SIGN mode; check for BUY/SELL signal (not HOLD) |
+| tUSDC not appearing in HashPack | Use MANUAL SIGN mode; check for BUY/SELL signal (not HOLD) |
+| tUSDC balance not updating | Must restart frontend after redeploying MockDEX (env vars changed) |
 | Agent always returns HOLD | Check API logs for "Computed indicators" — Binance fetch must succeed |
 | Run Trade button grayed out | Agent is in AUTO mode (intentional) or Paused |
-| Wallet needs 2 clicks to connect | Fixed — rehydration now works on first click |
-| `TypeError: bigint not assignable` | Fixed in withdraw endpoint — `Hbar.fromTinybars` now receives string |
-| MockDEX swap fails silently | Fixed — ABI now uses `sellHBARforUSDT`/`buyHBARwithUSDT` matching Solidity |
+| BUY shows "Contract ID: 0.0.0" | Frontend env var `NEXT_PUBLIC_MOCK_DEX_ADDRESS` not loaded — restart Next.js |
+| `tUSDC allowance failed` | Token not associated with wallet — reconnect to trigger association |
+| MockDEX swap fails silently | Check contract address matches `0.0.8332937` — old contract is deprecated |

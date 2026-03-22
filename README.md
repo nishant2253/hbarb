@@ -42,14 +42,16 @@ cp apps/api/.env.example apps/api/.env
 | Variable | Where to get it |
 |---|---|
 | `OPERATOR_ACCOUNT_ID` | [portal.hedera.com](https://portal.hedera.com) → Testnet account (ECDSA) |
-| `OPERATOR_PRIVATE_KEY` | Same portal — ECDSA hex key (starts with 0x or 302e…) |
+| `OPERATOR_PRIVATE_KEY` | Same portal — ECDSA hex key (starts with `0x`) |
 | `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com) → Get API Key |
 | `SUPABASE_URL` | Supabase project → Settings → API |
 | `SUPABASE_ANON_KEY` | Same page |
 | `DATABASE_URL` | Supabase → Settings → Database → Connection string (Transaction pooler) |
-| `MOCK_DEX_ADDRESS` | `0x…` EVM address of the deployed `MockDEX.sol` on testnet |
-| `TEST_USDT_TOKEN_ID` | Hedera token ID for the testnet tUSDT token (e.g. `0.0.XXXXXX`) |
-| `AGENT_REGISTRY_ADDRESS` | `0x…` EVM address of the deployed `AgentRegistry.sol` |
+| `MOCK_DEX_ADDRESS` | Auto-set by `deployMockDEX.ts` (testnet: `0x...7f2689`) |
+| `MOCK_DEX_HEDERA_ID` | Auto-set by deploy script (testnet: `0.0.8332937`) |
+| `TEST_USDT_TOKEN_ID` | Auto-set by deploy script — HTS tUSDC token (testnet: `0.0.8332870`) |
+| `AGENT_REGISTRY_CONTRACT_ID` | Set after running `deployNative.ts` (testnet: `0.0.8316308`) |
+| `STRATEGY_TOKEN_ID` | HTS NFT collection token (testnet: `0.0.8316389`) |
 | `REDIS_URL` | `redis://localhost:6379` (local) or Redis Cloud URL |
 
 **Required values in `apps/web/.env.local`:**
@@ -58,9 +60,11 @@ cp apps/api/.env.example apps/api/.env
 |---|---|
 | `NEXT_PUBLIC_API_URL` | `http://localhost:3001` |
 | `NEXT_PUBLIC_HEDERA_NETWORK` | `testnet` |
-| `NEXT_PUBLIC_MOCK_DEX_ADDRESS` | Same as `MOCK_DEX_ADDRESS` above |
-| `NEXT_PUBLIC_TEST_USDT_TOKEN_ID` | Same as `TEST_USDT_TOKEN_ID` above |
-| `NEXT_PUBLIC_AGENT_REGISTRY_ADDRESS` | Same as `AGENT_REGISTRY_ADDRESS` above |
+| `NEXT_PUBLIC_MOCK_DEX_ADDRESS` | Auto-set by deploy script |
+| `NEXT_PUBLIC_MOCK_DEX_CONTRACT_ID` | Auto-set by deploy script (needed for BUY allowance) |
+| `NEXT_PUBLIC_TEST_USDT_TOKEN_ID` | Auto-set by deploy script — tUSDC token |
+| `NEXT_PUBLIC_STRATEGY_TOKEN_ID` | HTS NFT collection token (testnet: `0.0.8316389`) |
+| `NEXT_PUBLIC_AGENT_REGISTRY_ADDRESS` | EVM address of AgentRegistry |
 | `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | [cloud.walletconnect.com](https://cloud.walletconnect.com) |
 
 ### 3. Set Up Database
@@ -117,8 +121,10 @@ hbarb/                               # npm workspaces root
 │   ├── contracts/                   # Solidity smart contracts
 │   │   ├── contracts/
 │   │   │   ├── AgentRegistry.sol    # On-chain agent registry (HSCS)
-│   │   │   └── MockDEX.sol          # Testnet AMM (x*y=k, HTS precompile)
-│   │   └── scripts/deployNative.ts  # Hedera-native deployment
+│   │   │   └── MockDEX.sol          # Testnet AMM v2 (real HTS token transfers)
+│   │   └── scripts/
+│   │       ├── deployNative.ts      # AgentRegistry — Hedera-native (ContractCreateFlow)
+│   │       └── deployMockDEX.ts     # MockDEX — creates tUSDC, deploys, funds, seeds pool
 │   ├── hedera/                      # Hedera SDK wrappers
 │   │   └── src/
 │   │       ├── client.ts            # SDK singleton + operator key
@@ -151,13 +157,16 @@ hbarb/                               # npm workspaces root
 
 ```
 1. Binance 1h candles → compute EMA/RSI
-2. Gemini 2.5 Flash → BUY/SELL/HOLD + reasoning
-3. HCS message #N  ← decision logged BEFORE swap (aBFT timestamp)
-4. MockDEX.swap()  ← embeds HCS sequence #N in SwapExecuted event
-5. HCS message #N+1 ← execution result logged with txHash
+2. Pyth + SaucerSwap prices → cross-check (>5% divergence → use DEX price)
+3. syncMockDexReserves() → pool updated to match market price
+4. Gemini 2.5 Flash → BUY/SELL/HOLD + reasoning
+5. HCS message #N  ← decision logged BEFORE swap (aBFT timestamp)
+6. MockDEX.executeSwap()  ← real HTS token transfer; embeds HCS seq #N
+7. HCS message #N+1 ← execution result logged with txHash
 ```
 
 Every swap is cryptographically linked to the AI decision that triggered it.
+HBAR and tUSDC balances change in real wallets — not simulated.
 
 ---
 
@@ -174,7 +183,9 @@ Every swap is cryptographically linked to the AI decision that triggered it.
 | EMA/RSI/MACD from Binance candles | ✅ Complete |
 | Gemini decision with real indicators | ✅ Complete |
 | HCS decision logging (aBFT) | ✅ Complete |
-| MockDEX swap (sellHBARforUSDT / buyHBARwithUSDT) | ✅ Complete |
+| MockDEX v2 — real HTS token transfers (SELL + BUY) | ✅ Complete |
+| SaucerSwap live DEX price feed + reserve sync | ✅ Complete |
+| TradeApprovalModal — live quote + 2-step BUY flow | ✅ Complete |
 | AUTO mode autonomous trading (agent key) | ✅ Complete |
 | MANUAL mode (HashPack trade approval) | ✅ Complete |
 | Test Run (dry run, no swap) | ✅ Complete |
@@ -182,9 +193,11 @@ Every swap is cryptographically linked to the AI decision that triggered it.
 | Transaction Audit Log (/wallet) | ✅ Complete |
 | Rich HCS Execution History | ✅ Complete |
 | HCS-10 OpenConvAI registration (background) | ✅ Complete |
-| Marketplace listing + NFT minting | ✅ Complete |
+| Marketplace listing UI (agent dashboard) | ✅ Complete |
+| Marketplace buyer flow (associate + atomic swap + clone) | ✅ Complete |
+| 5% royalty — Hedera HTS protocol-enforced | ✅ Complete |
 | Wallet rehydration (no re-prompt on refresh) | ✅ Complete |
-| Mainnet / SaucerSwap integration | ⏳ Post-hackathon |
+| Mainnet / SaucerSwap live execution | ⏳ Post-hackathon |
 
 ---
 
