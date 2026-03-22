@@ -7,12 +7,12 @@ import prisma from "../db/prisma";
 const MOCK_DEX_ABI = [
   // Read
   "function getSwapQuote(string direction, uint256 amountIn) view returns (uint256 amountOut, uint256 priceImpactBps, uint256 slippageBps)",
-  "function getAgentSwaps(string agentId) view returns (tuple(address trader, string agentId, string direction, uint256 amountIn, uint256 amountOut, uint256 priceUSDCents, uint256 slippageBps, uint256 timestamp, string hcsSequenceNum, string hcsTopicId)[])",
+  "function getAgentSwaps(string agentId) view returns (tuple(address trader, string agentId, string direction, uint256 amountIn, uint256 amountOut, uint256 hbarPriceUSDCents, uint256 slippageBps, uint256 timestamp, string hcsSequenceNum, string hcsTopicId)[])",
   "function getPoolState() view returns (uint256 hbar, uint256 usdc, uint256 spotPrice)",
-  // Write — single executeSwap function; directions: "HBAR_TO_USDC" or "USDC_TO_HBAR"
-  "function executeSwap(string agentId, string direction, uint256 amountIn, uint256 minAmountOut, string hcsSequenceNum, string hcsTopicId) external returns (uint256)",
+  // Write — HBAR_TO_USDC needs msg.value; USDC_TO_HBAR needs prior allowance
+  "function executeSwap(string agentId, string direction, uint256 amountIn, uint256 minAmountOut, string hcsSequenceNum, string hcsTopicId) external payable returns (uint256)",
   // Events
-  "event SwapExecuted(string indexed agentId, string direction, uint256 amountIn, uint256 amountOut, uint256 slippageBps, string hcsSequenceNum, string hcsTopicId, uint256 timestamp)",
+  "event SwapExecuted(string indexed agentId, string direction, uint256 hbarAmount, uint256 usdcAmount, uint256 slippageBps, string hcsSequenceNum, string hcsTopicId, address trader, uint256 timestamp)",
 ];
 
 // ■■ Types ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
@@ -198,7 +198,17 @@ async function executeViaMockDEX(
   const minOut = expectedOut * 995n / 1000n;
 
   // Step 4: Execute the swap — single executeSwap entry point for both directions
+  // HBAR_TO_USDC (SELL): msg.value must carry the HBAR tinybars → real HBAR transfer
+  // USDC_TO_HBAR (BUY):  agent wallet must have approved tUSDC allowance to MockDEX
   console.log(`[MockDEX] Executing ${direction} swap (HCS seq #${hcsSequenceNum})...`);
+  const txOptions: Record<string, unknown> = {
+    gasLimit: 800000,
+    gasPrice: ethers.parseUnits("1200", "gwei"),
+  };
+  if (direction === "HBAR_TO_USDC") {
+    // Send the HBAR as msg.value so MockDEX can transfer real tUSDC back
+    txOptions.value = params.amountTinybars;
+  }
   const tx = await mockDex.executeSwap(
     params.agentId,
     direction,
@@ -206,10 +216,7 @@ async function executeViaMockDEX(
     minOut,
     hcsSequenceNum,
     params.hcsTopicId,
-    {
-      gasLimit: 300000,
-      gasPrice: ethers.parseUnits("960", "gwei"),
-    }
+    txOptions
   );
   console.log(`[MockDEX] Transaction submitted: ${tx.hash}`);
 

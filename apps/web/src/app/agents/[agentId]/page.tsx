@@ -7,7 +7,7 @@ import {
   ArrowLeftIcon, ExternalLinkIcon, PlayIcon, PauseIcon,
   ShieldCheckIcon, FileTextIcon, ActivityIcon, ClockIcon, ZapIcon,
   ArrowRightLeftIcon, CheckCircle2Icon, WalletIcon, TrendingUpIcon, ArrowDownToLineIcon,
-  Loader2,
+  StoreIcon, TagIcon, Loader2,
 } from 'lucide-react';
 
 import { TradeApprovalModal } from '@/components/TradeApprovalModal';
@@ -110,8 +110,12 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
   const [running,     setRunning]     = useState(false);
   const [pendingTrade, setPendingTrade] = useState<PendingTrade | null>(null);
   const [togglingMode, setTogglingMode] = useState(false);
-  const [portfolio,   setPortfolio]   = useState<AgentPortfolio | null>(null);
-  const [withdrawing, setWithdrawing] = useState(false);
+  const [portfolio,     setPortfolio]     = useState<AgentPortfolio | null>(null);
+  const [withdrawing,   setWithdrawing]   = useState(false);
+  const [listingPrice,  setListingPrice]  = useState('');
+  const [listingStatus, setListingStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  const [listingResult, setListingResult] = useState<{ serialNumber: number; tokenId: string } | null>(null);
+  const [delisting,     setDelisting]     = useState(false);
 
   const { accountId } = useWalletStore();
 
@@ -174,6 +178,46 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
       alert(`Withdrawal failed: ${err.message}`);
     } finally {
       setWithdrawing(false);
+    }
+  }
+
+  async function listOnMarketplace() {
+    if (!agent || !listingPrice || parseFloat(listingPrice) <= 0) return;
+    setListingStatus('loading');
+    try {
+      const res = await fetch(`${API_URL}/api/marketplace/list`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          agentId,
+          priceHbar:   parseFloat(listingPrice),
+          description: `${agent.strategyType} strategy agent by ${agent.ownerId}`,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Listing failed');
+      setListingResult({ serialNumber: data.serialNumber, tokenId: data.tokenId });
+      setAgent(a => a ? { ...a, listed: true, serialNumber: data.serialNumber, priceHbar: parseFloat(listingPrice) } as any : a);
+      setListingStatus('done');
+    } catch (err: any) {
+      alert(`Listing failed: ${err.message}`);
+      setListingStatus('error');
+    }
+  }
+
+  async function delistFromMarketplace() {
+    if (!agent) return;
+    setDelisting(true);
+    try {
+      const res = await fetch(`${API_URL}/api/marketplace/${agentId}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Delist failed');
+      setAgent(a => a ? { ...a, listed: false } : a);
+      setListingStatus('idle');
+      setListingResult(null);
+    } catch (err: any) {
+      alert(`Delist failed: ${err.message}`);
+    } finally {
+      setDelisting(false);
     }
   }
 
@@ -477,6 +521,98 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
               Withdraw All
             </button>
           </div>
+        </div>
+      )}
+
+      {/* ── NFT Marketplace Listing ───────────────────────────────── */}
+      {agent && agent.ownerId === accountId && (
+        <div className="glass-card p-6">
+          <div className="flex items-center justify-between mb-5">
+            <h2 className="font-semibold flex items-center gap-2" style={{ color: '#E2E8F0' }}>
+              <StoreIcon size={16} style={{ color: '#00A9BA' }} />
+              NFT Marketplace
+            </h2>
+            <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: 'rgba(0,169,186,0.1)', color: '#00A9BA', border: '1px solid rgba(0,169,186,0.2)' }}>
+              5% royalty — Hedera protocol-enforced
+            </span>
+          </div>
+
+          {agent.listed ? (
+            <div className="space-y-4">
+              <div className="flex items-center gap-3 p-4 rounded-xl" style={{ background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.15)' }}>
+                <CheckCircle2Icon size={20} className="text-green-400 flex-shrink-0" />
+                <div className="flex-1">
+                  <p className="text-sm font-semibold text-green-400">Listed on Marketplace</p>
+                  <p className="text-[11px] text-gray-400 mt-0.5">
+                    Serial #{(agent as any).serialNumber} · {(agent as any).priceHbar ?? '?'} HBAR
+                  </p>
+                </div>
+                <a
+                  href={`${process.env.NEXT_PUBLIC_API_URL?.replace('3001', '3000')}/marketplace/${agentId}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[11px] px-3 py-1.5 rounded-lg flex items-center gap-1"
+                  style={{ background: 'rgba(0,169,186,0.1)', color: '#00A9BA', border: '1px solid rgba(0,169,186,0.2)' }}
+                >
+                  View <ExternalLinkIcon size={11} />
+                </a>
+              </div>
+              <button
+                onClick={delistFromMarketplace}
+                disabled={delisting}
+                className="w-full py-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 disabled:opacity-50 transition-all hover:opacity-80"
+                style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', color: '#EF4444' }}
+              >
+                {delisting ? <Loader2 size={12} className="animate-spin" /> : <TagIcon size={12} />}
+                Delist from Marketplace
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <p className="text-[11px] text-gray-400 leading-relaxed">
+                Mint this agent&apos;s strategy as an HTS NFT. Buyers receive a working copy of your agent. 
+                Every resale automatically pays you 5% royalty — enforced at the Hedera protocol level, impossible to bypass.
+              </p>
+
+              {listingStatus === 'done' && listingResult ? (
+                <div className="p-4 rounded-xl" style={{ background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.15)' }}>
+                  <p className="text-sm font-semibold text-green-400 mb-1">Listed Successfully!</p>
+                  <p className="text-[11px] text-gray-400">Serial #{listingResult.serialNumber}</p>
+                  <a
+                    href={`https://hashscan.io/${NETWORK}/token/${listingResult.tokenId}/${listingResult.serialNumber}`}
+                    target="_blank" rel="noopener noreferrer"
+                    className="text-[11px] text-[#00A9BA] hover:underline flex items-center gap-1 mt-1"
+                  >
+                    View NFT on HashScan <ExternalLinkIcon size={10} />
+                  </a>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      placeholder="Price in HBAR"
+                      value={listingPrice}
+                      onChange={e => setListingPrice(e.target.value)}
+                      className="w-full px-3 py-2.5 rounded-xl text-sm font-mono text-white placeholder-gray-600 bg-black/30 border border-white/10 focus:border-[#00A9BA]/50 outline-none"
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-gray-500">HBAR</span>
+                  </div>
+                  <button
+                    onClick={listOnMarketplace}
+                    disabled={listingStatus === 'loading' || !listingPrice || parseFloat(listingPrice) <= 0}
+                    className="px-5 py-2.5 rounded-xl text-sm font-semibold flex items-center gap-2 disabled:opacity-50 transition-all"
+                    style={{ background: 'rgba(0,169,186,0.15)', border: '1px solid rgba(0,169,186,0.3)', color: '#00A9BA' }}
+                  >
+                    {listingStatus === 'loading' ? <Loader2 size={14} className="animate-spin" /> : <StoreIcon size={14} />}
+                    List as NFT
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

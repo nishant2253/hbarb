@@ -46,20 +46,26 @@ function AgentAvatar({ name, size = 64 }: { name: string; size?: number }) {
 }
 
 import { 
-  TransferTransaction, TokenId, NftId, 
-  AccountId, Hbar 
+  TransferTransaction, TokenAssociateTransaction,
+  TokenId, NftId, AccountId, Hbar,
 } from "@hashgraph/sdk";
+import { useRouter } from 'next/navigation';
 import { useWalletStore } from '@/stores/walletStore';
 import { fetchBalances } from '@/lib/balance';
 
-const STRATEGY_TOKEN_ID = "0.0.8316389"; // From backend config
+// Read strategy NFT token ID from env (set after NFT collection is created)
+const STRATEGY_TOKEN_ID =
+  process.env.NEXT_PUBLIC_STRATEGY_TOKEN_ID || '0.0.8316389';
 
 export default function MarketplaceDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const [listing, setListing] = useState<ListingDetail | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [buying,  setBuying]  = useState(false);
-  const [bought,  setBought]  = useState(false);
+  const router  = useRouter();
+  const [listing,   setListing]   = useState<ListingDetail | null>(null);
+  const [loading,   setLoading]   = useState(true);
+  const [buying,    setBuying]    = useState(false);
+  const [buyPhase,  setBuyPhase]  = useState<string>('');
+  const [bought,    setBought]    = useState(false);
+  const [clonedId,  setClonedId]  = useState<string | null>(null);
   const { signer, accountId, setBalances } = useWalletStore();
 
   useEffect(() => {
@@ -75,46 +81,74 @@ export default function MarketplaceDetailPage({ params }: { params: Promise<{ id
     
     setBuying(true);
     try {
-      const tokenId = TokenId.fromString(STRATEGY_TOKEN_ID);
-      const buyerId = AccountId.fromString(accountId);
-      const sellerId = AccountId.fromString(listing.ownerId);
-      const priceTinybars = Math.floor((listing.priceHbar || 0) * 1e8);
+      const strategyTokenId = TokenId.fromString(STRATEGY_TOKEN_ID);
+      const buyerAcctId     = AccountId.fromString(accountId);
+      const sellerAcctId    = AccountId.fromString(listing.ownerId);
+      const priceTinybars   = Math.floor((listing.priceHbar || 0) * 1e8);
 
-      // Atomic swap: HBAR from buyer to seller, NFT from seller to buyer
-      // Hedera HTS auto-deducts royalties (5%) at protocol level
+      // ── Step 1: Associate strategy NFT token with buyer's wallet ──
+      // Required before HTS can transfer the NFT to this account.
+      setBuyPhase('Associating strategy NFT token…');
+      try {
+        const assocTx = await new TokenAssociateTransaction()
+          .setAccountId(buyerAcctId)
+          .setTokenIds([strategyTokenId])
+          .setMaxTransactionFee(new Hbar(2))
+          .freezeWithSigner(signer);
+        const assocResp = await assocTx.executeWithSigner(signer);
+        await assocResp.getReceiptWithSigner(signer);
+      } catch (assocErr: any) {
+        // TOKEN_ALREADY_ASSOCIATED_TO_ACCOUNT is fine — skip
+        if (!assocErr?.message?.includes('TOKEN_ALREADY_ASSOCIATED')) {
+          throw assocErr;
+        }
+      }
+
+      // ── Step 2: Atomic swap — HBAR from buyer → seller, NFT from seller → buyer
+      // Hedera HTS auto-deducts 5% royalty at protocol level (buyer pays gross amount)
+      setBuyPhase('Confirming NFT purchase on Hedera…');
       const atomicSwapTx = await new TransferTransaction()
-        .addHbarTransfer(buyerId, Hbar.fromTinybars(-priceTinybars))
-        .addHbarTransfer(sellerId, Hbar.fromTinybars(priceTinybars))
-        .addNftTransfer(new NftId(tokenId, listing.serialNumber), sellerId, buyerId)
-        .setMaxTransactionFee(new Hbar(5))
+        .addHbarTransfer(buyerAcctId,  Hbar.fromTinybars(-priceTinybars))
+        .addHbarTransfer(sellerAcctId, Hbar.fromTinybars(priceTinybars))
+        .addNftTransfer(new NftId(strategyTokenId, listing.serialNumber), sellerAcctId, buyerAcctId)
+        .setMaxTransactionFee(new Hbar(10))
         .freezeWithSigner(signer);
 
       const response = await atomicSwapTx.executeWithSigner(signer);
       await response.getReceiptWithSigner(signer);
 
-      // Tell backend to clone agent and update ownership
+      // ── Step 3: Tell backend to clone agent for buyer ─────────────
+      setBuyPhase('Setting up your agent copy…');
       const postRes = await fetch(`${API_URL}/api/marketplace/post-purchase`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tokenId: STRATEGY_TOKEN_ID,
-          serialNumber: listing.serialNumber,
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          tokenId:        STRATEGY_TOKEN_ID,
+          serialNumber:   listing.serialNumber,
           buyerAccountId: accountId,
-          txId: response.transactionId.toString(),
+          txId:           response.transactionId?.toString() ?? '',
         }),
       });
-
-      if (!postRes.ok) throw new Error("Backend post-purchase failed");
+      if (!postRes.ok) throw new Error('Backend post-purchase failed');
+      const postData = await postRes.json();
+      setClonedId(postData.clonedAgentId);
 
       setBought(true);
-      
+      setBuyPhase('');
+
       // Refresh balances
       const b = await fetchBalances(accountId);
       setBalances(b.hbar, b.tusdt);
+
+      // Auto-redirect to the new agent after 3 seconds
+      if (postData.clonedAgentId) {
+        setTimeout(() => router.push(`/agents/${postData.clonedAgentId}`), 3000);
+      }
     } catch (err: any) {
-      console.error("NFT Purchase failed:", err);
-      if (err?.message?.includes('User rejected')) {
-        alert("Purchase cancelled: Transaction rejected in wallet.");
+      console.error('NFT Purchase failed:', err);
+      setBuyPhase('');
+      if (err?.message?.includes('User rejected') || err?.message?.includes('rejected')) {
+        alert('Purchase cancelled: Transaction rejected in wallet.');
       } else {
         alert(`Purchase failed: ${err.message}`);
       }
@@ -302,16 +336,28 @@ export default function MarketplaceDetailPage({ params }: { params: Promise<{ id
             </div>
 
             {bought ? (
-              <div
-                className="w-full py-3 rounded-xl text-center text-sm font-bold"
-                style={{ background: 'rgba(16,185,129,0.12)', color: '#10B981', border: '1px solid rgba(16,185,129,0.25)' }}
-              >
-                ✓ Strategy Acquired!
+              <div className="space-y-3">
+                <div
+                  className="w-full py-3 rounded-xl text-center text-sm font-bold"
+                  style={{ background: 'rgba(16,185,129,0.12)', color: '#10B981', border: '1px solid rgba(16,185,129,0.25)' }}
+                >
+                  ✓ Strategy Acquired!
+                </div>
+                {clonedId && (
+                  <Link
+                    href={`/agents/${clonedId}`}
+                    className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-semibold transition-all"
+                    style={{ background: 'rgba(0,169,186,0.1)', color: '#00A9BA', border: '1px solid rgba(0,169,186,0.25)' }}
+                  >
+                    Go to My Agent Dashboard →
+                  </Link>
+                )}
+                <p className="text-[10px] text-center text-gray-500">Redirecting automatically…</p>
               </div>
             ) : (
               <button
                 onClick={handleBuy}
-                disabled={buying}
+                disabled={buying || !accountId}
                 className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-bold cursor-pointer transition-all duration-200 disabled:opacity-60"
                 style={{
                   background: 'linear-gradient(135deg, #00A9BA, #1565C0)',
@@ -320,7 +366,7 @@ export default function MarketplaceDetailPage({ params }: { params: Promise<{ id
                 }}
               >
                 <ShoppingCartIcon size={15} />
-                {buying ? 'Confirming on Hedera…' : 'Buy Strategy NFT'}
+                {buying ? (buyPhase || 'Processing…') : !accountId ? 'Connect Wallet First' : 'Buy Strategy NFT'}
               </button>
             )}
 

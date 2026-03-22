@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-// ── Hedera System Contract Interfaces ────────────────────────
+// ── Hedera System Contract Interfaces ────────────────────────────
 // HTS Precompile — native token operations on Hedera
 // This is Hedera-EXCLUSIVE. Not available on any other EVM chain.
 interface IHederaTokenService {
@@ -30,37 +30,37 @@ interface IExchangeRate {
  * @title MockDEX — Real Token Swap on Hedera Testnet
  *
  * REAL BEHAVIOR:
- *   SELL (HBAR → tUSDT):
+ *   SELL (HBAR_TO_USDC):
  *     - Caller sends real HBAR (msg.value)
- *     - Contract sends real tUSDT to caller via HTS precompile
+ *     - Contract sends real tUSDC to caller via HTS precompile
  *     - Caller's HBAR balance decreases
- *     - Caller's tUSDT balance increases
+ *     - Caller's tUSDC balance increases
  *
- *   BUY (tUSDT → HBAR):
- *     - Caller approves tUSDT spend, contract pulls it via HTS
+ *   BUY (USDC_TO_HBAR):
+ *     - Caller grants allowance, contract pulls tUSDC via HTS
  *     - Contract sends real HBAR to caller
- *     - Caller's tUSDT balance decreases
+ *     - Caller's tUSDC balance decreases
  *     - Caller's HBAR balance increases
  *
- * This makes testnet trades IDENTICAL to mainnet in behavior.
- * Switch to hak-saucerswap-plugin on mainnet — zero other changes.
+ * Single unified executeSwap() entry point embeds HCS sequence number
+ * for tamper-proof proof chain: AI decision → HCS → on-chain swap.
  */
 contract MockDEX {
 
-    // ── Hedera Precompile Addresses ───────────────────────────
+    // ── Hedera Precompile Addresses ───────────────────────────────
     address constant HTS_PRECOMPILE =
         0x0000000000000000000000000000000000000167;
     address constant EXCHANGE_RATE_PRECOMPILE =
         0x0000000000000000000000000000000000000168;
 
-    // ── State ─────────────────────────────────────────────────
+    // ── State ─────────────────────────────────────────────────────
     address public owner;
-    address public tUSDTTokenAddress;  // HTS token address
+    address public tUSDCTokenAddress;   // HTS fungible token address
 
-    // Simulated pool reserves for price calculation
-    uint256 public reserveHBAR = 1_000_000 * 1e8;   // 1M HBAR in tinybars
-    uint256 public reserveUSDT = 85_000 * 1e6;       // 85K USDT in micro-USDT
-    uint256 public constant FEE_BPS = 30;             // 0.3% fee
+    // Simulated pool reserves for AMM price calculation (x*y=k)
+    uint256 public reserveHBAR = 1_000_000 * 1e8;  // 1M HBAR in tinybars
+    uint256 public reserveUSDC = 85_000 * 1e6;      // 85K USDC in micro-USDC
+    uint256 public constant FEE_BPS = 30;            // 0.3% swap fee
 
     // Swap record — links every trade to its HCS decision
     struct SwapRecord {
@@ -79,12 +79,12 @@ contract MockDEX {
     mapping(string => SwapRecord[]) public agentSwaps;
     SwapRecord[] public allSwaps;
 
-    // ── Events — indexed by Mirror Node ──────────────────────
+    // ── Events — indexed by Mirror Node ──────────────────────────
     event SwapExecuted(
         string  indexed agentId,
         string  direction,
         uint256 hbarAmount,
-        uint256 usdtAmount,
+        uint256 usdcAmount,
         uint256 slippageBps,
         string  hcsSequenceNum,
         string  hcsTopicId,
@@ -92,12 +92,12 @@ contract MockDEX {
         uint256 timestamp
     );
 
-    event ReservesRefreshed(uint256 hbar, uint256 usdt, uint256 price);
+    event ReservesRefreshed(uint256 hbar, uint256 usdc, uint256 price);
 
-    // ── Constructor ────────────────────────────────────────────
-    constructor(address _tUSDTAddress) {
+    // ── Constructor ───────────────────────────────────────────────
+    constructor(address _tUSDCAddress) {
         owner = msg.sender;
-        tUSDTTokenAddress = _tUSDTAddress;
+        tUSDCTokenAddress = _tUSDCAddress;
     }
 
     modifier onlyOwner() {
@@ -109,7 +109,11 @@ contract MockDEX {
     receive() external payable {}
     fallback() external payable {}
 
-    // ── AMM Quote (x*y=k constant product) ────────────────────
+    // ── AMM Quote (x*y=k constant product) ───────────────────────
+    /**
+     * @notice Returns expected output, price impact, and slippage for a swap.
+     * @dev Read-only — safe to call via ethers.JsonRpcProvider without signing.
+     */
     function getSwapQuote(
         string memory direction,
         uint256 amountIn
@@ -123,151 +127,145 @@ contract MockDEX {
         uint256 amountInFee = amountIn * (10000 - FEE_BPS) / 10000;
         bytes32 dir = keccak256(bytes(direction));
 
-        if (dir == keccak256(bytes("HBAR_TO_USDT"))) {
-            // Selling HBAR, getting USDT back
-            amountOut = (reserveUSDT * amountInFee)
-                      / (reserveHBAR + amountInFee);
+        if (dir == keccak256(bytes("HBAR_TO_USDC"))) {
+            amountOut      = (reserveUSDC * amountInFee) / (reserveHBAR + amountInFee);
             priceImpactBps = (amountIn * 10000) / reserveHBAR;
-        } else if (dir == keccak256(bytes("USDT_TO_HBAR"))) {
-            // Selling USDT, getting HBAR back
-            amountOut = (reserveHBAR * amountInFee)
-                      / (reserveUSDT + amountInFee);
-            priceImpactBps = (amountIn * 10000) / reserveUSDT;
+        } else if (dir == keccak256(bytes("USDC_TO_HBAR"))) {
+            amountOut      = (reserveHBAR * amountInFee) / (reserveUSDC + amountInFee);
+            priceImpactBps = (amountIn * 10000) / reserveUSDC;
         } else {
-            revert("Invalid direction: HBAR_TO_USDT or USDT_TO_HBAR");
+            revert("Invalid direction: use HBAR_TO_USDC or USDC_TO_HBAR");
         }
 
         slippageBps = priceImpactBps / 2;
     }
 
-    // ── SELL HBAR → Receive Real tUSDT ────────────────────────
+    // ── Unified Swap Entry Point ──────────────────────────────────
     /**
-     * @notice Caller sends HBAR (msg.value), receives real tUSDT.
-     * @dev Uses HTS System Contract to transfer tUSDT to caller.
-     *      Caller's HBAR balance DECREASES in HashPack.
-     *      Caller's tUSDT balance INCREASES in HashPack.
+     * @notice Execute a swap. Real HTS token transfers on both directions.
+     *
+     * HBAR_TO_USDC (SELL):
+     *   - Send HBAR as msg.value; receives tUSDC via HTS precompile.
+     *   - amountIn is IGNORED — msg.value is used instead.
+     *
+     * USDC_TO_HBAR (BUY):
+     *   - Grant allowance first via AccountAllowanceApproveTransaction.
+     *   - amountIn = tUSDC amount in micro-USDC (6 decimals).
+     *   - Receives HBAR via direct transfer.
+     *
+     * @param agentId       UUID of the trading agent
+     * @param direction     "HBAR_TO_USDC" or "USDC_TO_HBAR"
+     * @param amountIn      For USDC_TO_HBAR: micro-USDC to spend. For HBAR_TO_USDC: ignored (use msg.value).
+     * @param minAmountOut  Minimum output; reverts if slippage exceeded
+     * @param hcsSeq        HCS sequence number of AI decision (proof chain)
+     * @param topicId       HCS topic ID
      */
-    function sellHBARforUSDT(
+    function executeSwap(
         string memory agentId,
-        uint256 minUSDTOut,
-        string memory hcsSequenceNum,
-        string memory hcsTopicId
-    ) external payable returns (uint256 usdtOut) {
-        uint256 hbarIn = msg.value;  // Real HBAR sent by caller
-        require(hbarIn > 0, "Must send HBAR");
+        string memory direction,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        string memory hcsSeq,
+        string memory topicId
+    ) external payable returns (uint256 amountOut) {
+        bytes32 dir = keccak256(bytes(direction));
 
-        // Calculate output
-        (uint256 expectedOut, , uint256 slippageBps) =
-            getSwapQuote("HBAR_TO_USDT", hbarIn);
-        require(expectedOut >= minUSDTOut, "Slippage exceeded");
-        require(slippageBps <= 100, "Price impact > 1%");
+        if (dir == keccak256(bytes("HBAR_TO_USDC"))) {
+            amountOut = _sellHBARforUSDC(agentId, minAmountOut, hcsSeq, topicId);
+        } else if (dir == keccak256(bytes("USDC_TO_HBAR"))) {
+            require(amountIn > 0, "amountIn must be > 0 for USDC_TO_HBAR");
+            amountOut = _buyHBARwithUSDC(agentId, amountIn, minAmountOut, hcsSeq, topicId);
+        } else {
+            revert("Invalid direction: use HBAR_TO_USDC or USDC_TO_HBAR");
+        }
+    }
 
-        usdtOut = expectedOut;
+    // ── SELL: HBAR → tUSDC ────────────────────────────────────────
+    function _sellHBARforUSDC(
+        string memory agentId,
+        uint256 minUSDCOut,
+        string memory hcsSeq,
+        string memory topicId
+    ) internal returns (uint256 usdcOut) {
+        uint256 hbarIn = msg.value;
+        require(hbarIn > 0, "Must send HBAR as msg.value");
+
+        (uint256 expectedOut, , uint256 slippageBps) = getSwapQuote("HBAR_TO_USDC", hbarIn);
+        require(expectedOut >= minUSDCOut, "Slippage exceeded");
+        require(slippageBps <= 200, "Price impact > 2%");
+
+        usdcOut = expectedOut;
 
         // Update pool reserves
         reserveHBAR += hbarIn;
-        reserveUSDT -= usdtOut;
+        reserveUSDC -= usdcOut;
 
-        // ── TRANSFER REAL tUSDT TO CALLER via HTS Precompile ──
-        // Support fallback for local EVM testing
-        uint256 codeSize;
-        address precompile = HTS_PRECOMPILE;
-        assembly { codeSize := extcodesize(precompile) }
-        
-        if (codeSize > 0) {
-            int64 responseCode = IHederaTokenService(HTS_PRECOMPILE)
-                .transferToken(
-                    tUSDTTokenAddress,
-                    address(this),     // From: MockDEX
-                    msg.sender,        // To:   trader's wallet
-                    int64(uint64(usdtOut))
-                );
-            require(responseCode == 22, "HTS transfer failed"); // 22 = SUCCESS
-        }
+        // ── Transfer real tUSDC to caller via HTS Precompile ─────
+        _htsTransfer(tUSDCTokenAddress, address(this), msg.sender, int64(uint64(usdcOut)));
 
-        // Get current HBAR price via Exchange Rate Precompile (Safe fallback)
-        uint256 hbarPriceUSDCents = 8;
-        {
-            (bool success, bytes memory result) = EXCHANGE_RATE_PRECOMPILE.call(
-                abi.encodeWithSelector(IExchangeRate.tinybarsToTinycents.selector, 100_000_000)
-            );
-            if (success && result.length > 0) {
-                hbarPriceUSDCents = abi.decode(result, (uint256));
-            }
-        }
-
-        // Record swap with HCS link
-        _recordSwap(agentId, "HBAR_TO_USDT", hbarIn, usdtOut,
-                    hbarPriceUSDCents, slippageBps,
-                    hcsSequenceNum, hcsTopicId);
+        uint256 price = _getHBARPriceUSDCents();
+        _recordSwap(agentId, "HBAR_TO_USDC", hbarIn, usdcOut, price, slippageBps, hcsSeq, topicId);
     }
 
-    // ── BUY HBAR with tUSDT → Receive Real HBAR ───────────────
-    /**
-     * @notice Caller sends tUSDT, receives real HBAR.
-     * @dev Caller must have called approveTokenAllowance() first.
-     *      Caller's tUSDT balance DECREASES in HashPack.
-     *      Caller's HBAR balance INCREASES in HashPack.
-     */
-    function buyHBARwithUSDT(
+    // ── BUY: tUSDC → HBAR ─────────────────────────────────────────
+    function _buyHBARwithUSDC(
         string memory agentId,
-        uint256 usdtIn,
+        uint256 usdcIn,
         uint256 minHBAROut,
-        string memory hcsSequenceNum,
-        string memory hcsTopicId
-    ) external returns (uint256 hbarOut) {
-        require(usdtIn > 0, "Must provide USDT amount");
-
-        // Calculate output
-        (uint256 expectedOut, , uint256 slippageBps) =
-            getSwapQuote("USDT_TO_HBAR", usdtIn);
+        string memory hcsSeq,
+        string memory topicId
+    ) internal returns (uint256 hbarOut) {
+        (uint256 expectedOut, , uint256 slippageBps) = getSwapQuote("USDC_TO_HBAR", usdcIn);
         require(expectedOut >= minHBAROut, "Slippage exceeded");
-        require(slippageBps <= 100, "Price impact > 1%");
+        require(slippageBps <= 200, "Price impact > 2%");
+        require(address(this).balance >= expectedOut, "Insufficient DEX HBAR");
 
         hbarOut = expectedOut;
 
-        // ── PULL tUSDT FROM CALLER via HTS Precompile ─────────
-        uint256 codeSize;
-        address precompile = HTS_PRECOMPILE;
-        assembly { codeSize := extcodesize(precompile) }
-        
-        if (codeSize > 0) {
-            int64 pullCode = IHederaTokenService(HTS_PRECOMPILE)
-                .transferToken(
-                    tUSDTTokenAddress,
-                    msg.sender,        // From: trader's wallet
-                    address(this),     // To:   MockDEX
-                    int64(uint64(usdtIn))
-                );
-            require(pullCode == 22, "HTS pull failed");
-        }
+        // ── Pull tUSDC from caller via HTS Precompile ────────────
+        // Caller must have called AccountAllowanceApproveTransaction first
+        _htsTransfer(tUSDCTokenAddress, msg.sender, address(this), int64(uint64(usdcIn)));
 
         // Update pool reserves
-        reserveUSDT += usdtIn;
+        reserveUSDC += usdcIn;
         reserveHBAR -= hbarOut;
 
-        // ── SEND REAL HBAR TO CALLER ───────────────────────────
-        // This is a real HBAR transfer — HashPack balance increases
-        require(address(this).balance >= hbarOut, "Insufficient DEX HBAR balance");
+        // ── Send real HBAR to caller ──────────────────────────────
         (bool sent, ) = payable(msg.sender).call{value: hbarOut}("");
         require(sent, "HBAR transfer failed");
 
-        uint256 hbarPriceUSDCents = 8;
-        {
-            (bool success, bytes memory result) = EXCHANGE_RATE_PRECOMPILE.call(
-                abi.encodeWithSelector(IExchangeRate.tinybarsToTinycents.selector, 100_000_000)
-            );
-            if (success && result.length > 0) {
-                hbarPriceUSDCents = abi.decode(result, (uint256));
-            }
-        }
-
-        _recordSwap(agentId, "USDT_TO_HBAR", usdtIn, hbarOut,
-                    hbarPriceUSDCents, slippageBps,
-                    hcsSequenceNum, hcsTopicId);
+        uint256 price = _getHBARPriceUSDCents();
+        _recordSwap(agentId, "USDC_TO_HBAR", usdcIn, hbarOut, price, slippageBps, hcsSeq, topicId);
     }
 
-    // ── Internal: record swap ─────────────────────────────────
+    // ── Internal helpers ──────────────────────────────────────────
+
+    function _htsTransfer(
+        address token,
+        address from,
+        address to,
+        int64 amount
+    ) internal {
+        // Only call HTS precompile on Hedera — skip on local EVM forks
+        uint256 codeSize;
+        address precompile = HTS_PRECOMPILE;
+        assembly { codeSize := extcodesize(precompile) }
+        if (codeSize > 0) {
+            int64 code = IHederaTokenService(HTS_PRECOMPILE).transferToken(token, from, to, amount);
+            require(code == 22, "HTS transfer failed");
+        }
+    }
+
+    function _getHBARPriceUSDCents() internal returns (uint256 price) {
+        price = 8; // fallback: $0.08
+        (bool ok, bytes memory result) = EXCHANGE_RATE_PRECOMPILE.call(
+            abi.encodeWithSelector(IExchangeRate.tinybarsToTinycents.selector, 100_000_000)
+        );
+        if (ok && result.length > 0) {
+            price = abi.decode(result, (uint256));
+        }
+    }
+
     function _recordSwap(
         string memory agentId,
         string memory direction,
@@ -279,16 +277,16 @@ contract MockDEX {
         string memory topicId
     ) internal {
         SwapRecord memory rec = SwapRecord({
-            trader:           msg.sender,
-            agentId:          agentId,
-            direction:        direction,
-            amountIn:         amountIn,
-            amountOut:        amountOut,
+            trader:            msg.sender,
+            agentId:           agentId,
+            direction:         direction,
+            amountIn:          amountIn,
+            amountOut:         amountOut,
             hbarPriceUSDCents: price,
-            slippageBps:      slippage,
-            timestamp:        block.timestamp,
-            hcsSequenceNum:   hcsSeq,
-            hcsTopicId:       topicId
+            slippageBps:       slippage,
+            timestamp:         block.timestamp,
+            hcsSequenceNum:    hcsSeq,
+            hcsTopicId:        topicId
         });
         agentSwaps[agentId].push(rec);
         allSwaps.push(rec);
@@ -299,35 +297,53 @@ contract MockDEX {
         );
     }
 
-    // ── Read Functions ─────────────────────────────────────────
+    // ── Read Functions ────────────────────────────────────────────
+
     function getAgentSwaps(string memory agentId)
         external view returns (SwapRecord[] memory) {
         return agentSwaps[agentId];
     }
-    
+
     function getTotalSwapCount() external view returns (uint256) {
         return allSwaps.length;
     }
 
     function getPoolState() external view returns (
-        uint256 hbar, uint256 usdt, uint256 spotPrice
+        uint256 hbar, uint256 usdc, uint256 spotPrice
     ) {
         hbar      = reserveHBAR;
-        usdt      = reserveUSDT;
-        // Spot price returns micro-USDT per tinybar representation
-        spotPrice = (reserveUSDT * 1e8) / reserveHBAR;
+        usdc      = reserveUSDC;
+        // micro-USDC per tinybar: spot price in contract units
+        spotPrice = (reserveUSDC * 1e8) / reserveHBAR;
     }
 
-    // ── Admin ─────────────────────────────────────────────────
+    // ── Admin ─────────────────────────────────────────────────────
+
     function fundWithHBAR() external payable onlyOwner {}
 
+    /**
+     * @notice Associate this contract with the tUSDC token (run once after deploy).
+     */
+    function associateTUSDC() external onlyOwner {
+        uint256 codeSize;
+        address precompile = HTS_PRECOMPILE;
+        assembly { codeSize := extcodesize(precompile) }
+        if (codeSize > 0) {
+            IHederaTokenService(HTS_PRECOMPILE).associateToken(address(this), tUSDCTokenAddress);
+        }
+    }
+
+    /**
+     * @notice Refresh reserves to match current market price.
+     * Call from operator after fetching Pyth/SaucerSwap price.
+     */
     function refreshReserves(
         uint256 newHBAR,
-        uint256 newUSDT
+        uint256 newUSDC
     ) external onlyOwner {
         reserveHBAR = newHBAR;
-        reserveUSDT = newUSDT;
-        uint256 price = (newUSDT * 1e8) / newHBAR;
-        emit ReservesRefreshed(newHBAR, newUSDT, price);
+        reserveUSDC = newUSDC;
+        uint256 price = (newUSDC * 1e8) / newHBAR;
+        emit ReservesRefreshed(newHBAR, newUSDC, price);
     }
 }

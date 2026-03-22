@@ -18,6 +18,7 @@ import {
   getOperatorKey,
   mintAgentNFT,
   getCollectionStats,
+  createAgentTopic,
 } from '@tradeagent/hedera';
 
 const router = Router();
@@ -216,6 +217,79 @@ router.get('/:agentId', async (req: Request, res: Response) => {
       },
     });
   } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// ── POST /api/marketplace/post-purchase ──────────────────────────
+/**
+ * Called by the frontend after a successful NFT atomic swap.
+ * Clones the purchased agent for the new owner, creates a new HCS
+ * topic for them, and schedules a BullMQ job.
+ */
+router.post('/post-purchase', async (req: Request, res: Response) => {
+  try {
+    const { tokenId, serialNumber, buyerAccountId, txId } = req.body as {
+      tokenId:        string;
+      serialNumber:   number;
+      buyerAccountId: string;
+      txId:           string;
+    };
+
+    if (!serialNumber || !buyerAccountId || !txId) {
+      return res.status(400).json({ error: 'tokenId, serialNumber, buyerAccountId, txId required' });
+    }
+
+    // 1. Find the original agent by serialNumber
+    const original = await prisma.agent.findFirst({
+      where: { serialNumber: Number(serialNumber) },
+    });
+    if (!original) {
+      return res.status(404).json({ error: `No agent found with serialNumber ${serialNumber}` });
+    }
+
+    // 2. Create a new HCS topic for the buyer (operator pays — background tx)
+    const client     = createHederaClient();
+    const newAgentId = require('crypto').randomUUID();
+    const newHcsTopic = await createAgentTopic(client, newAgentId);
+
+    // 3. Clone agent in DB with buyer as new owner
+    const cloned = await prisma.agent.create({
+      data: {
+        id:             newAgentId,
+        name:           `${original.name} (Copy)`,
+        ownerId:        buyerAccountId,
+        ownerEvm:       '',
+        config:         original.config,
+        configHash:     original.configHash,
+        strategyType:   original.strategyType,
+        hcsTopicId:     newHcsTopic,
+        hfsConfigId:    original.hfsConfigId,
+        contractTxId:   txId,
+        executionMode:  original.executionMode,
+        active:         false,   // buyer must activate separately
+        listed:         false,
+        tradingBudgetHbar: 0,
+      },
+    });
+
+    // 4. Schedule BullMQ job for the cloned agent
+    const { scheduleAgentJob } = await import('../agent/agentWorker');
+    await scheduleAgentJob(newAgentId);
+
+    client.close();
+
+    res.status(201).json({
+      clonedAgentId: newAgentId,
+      hcsTopicId:    newHcsTopic,
+      message:       'Agent cloned for new owner',
+      links: {
+        agent:     `/agents/${newAgentId}`,
+        hashscan:  `https://hashscan.io/${process.env.HEDERA_NETWORK || 'testnet'}/topic/${newHcsTopic}`,
+      },
+    });
+  } catch (err) {
+    console.error('[Marketplace] post-purchase error:', err);
     res.status(500).json({ error: (err as Error).message });
   }
 });

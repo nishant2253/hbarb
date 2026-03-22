@@ -23,10 +23,68 @@ import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { createReactAgent } from '@langchain/langgraph/prebuilt';
 import { HumanMessage } from '@langchain/core/messages';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { ethers } from 'ethers';
 import { submitAgentDecision, getOperatorKey, createHederaClient } from '@tradeagent/hedera';
 import { createAgentKit, getPythPrice } from './hederaKit';
 import { executeTradeSignal } from './tradeExecutor';
 import type { AgentConfig } from './promptBuilder';
+
+// ── SaucerSwap Price ──────────────────────────────────────────────
+
+/**
+ * Fetch the live HBAR/USDC price from SaucerSwap DEX.
+ * Uses the SaucerSwap public REST API — no key required.
+ * Returns null on failure so callers can fall back to Pyth.
+ */
+async function fetchSaucerSwapPrice(): Promise<number | null> {
+  try {
+    // SaucerSwap v2 tokens endpoint — HBAR is token 0 (native)
+    const res = await fetch('https://api.saucerswap.finance/tokens/', { signal: AbortSignal.timeout(4000) });
+    if (!res.ok) return null;
+    const tokens = await res.json() as Array<{ symbol: string; priceUsd: string }>;
+    const hbarToken = tokens.find(t => t.symbol === 'HBAR' || t.symbol === 'WHBAR');
+    if (!hbarToken?.priceUsd) return null;
+    const price = parseFloat(hbarToken.priceUsd);
+    return isNaN(price) || price <= 0 ? null : price;
+  } catch {
+    return null;
+  }
+}
+
+// ── MockDEX reserve sync ──────────────────────────────────────────
+
+const MOCK_DEX_RESERVE_ABI = [
+  "function refreshReserves(uint256 newHBAR, uint256 newUSDC) external",
+];
+
+/**
+ * Sync MockDEX pool reserves to reflect the current market price.
+ * Called after each price fetch so getSwapQuote() returns accurate values.
+ */
+async function syncMockDexReserves(priceUSD: number): Promise<void> {
+  const mockDexAddr = process.env.MOCK_DEX_ADDRESS;
+  const operatorKey = process.env.OPERATOR_PRIVATE_KEY;
+  if (!mockDexAddr || !operatorKey) return;
+
+  try {
+    const provider = new ethers.JsonRpcProvider('https://testnet.hashio.io/api');
+    const wallet   = new ethers.Wallet(operatorKey, provider);
+    const mockDex  = new ethers.Contract(mockDexAddr, MOCK_DEX_RESERVE_ABI, wallet);
+
+    // Keep pool balanced at ~500K HBAR with USDC reserves matching current price
+    const hbarReserveTinybars = BigInt(500_000) * BigInt(100_000_000);
+    const usdcReserveMicro    = BigInt(Math.round(priceUSD * 500_000 * 1_000_000));
+
+    await mockDex.refreshReserves(hbarReserveTinybars, usdcReserveMicro, {
+      gasLimit: 100_000,
+      gasPrice: ethers.parseUnits('1200', 'gwei'),
+    });
+    console.log(`[MockDEX] Pool synced: $${priceUSD.toFixed(4)}/HBAR`);
+  } catch (err) {
+    // Non-fatal — trading can still continue with stale reserves
+    console.warn('[MockDEX] Reserve sync skipped:', (err as Error).message?.slice(0, 80));
+  }
+}
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -178,7 +236,25 @@ export async function runAgentCycle(
     throw new Error(`Failed to fetch ${agentConfig.asset} price from Pyth + fallbacks`);
   }
 
+  // ── Cross-check with SaucerSwap DEX price ─────────────────────
+  const saucerPrice = await fetchSaucerSwapPrice();
+  if (saucerPrice) {
+    const deviation = Math.abs(price - saucerPrice) / price;
+    console.log(`[HederaKit] Pyth price for ${agentConfig.asset}: $${price}`);
+    console.log(`[SaucerSwap] DEX market price: $${saucerPrice.toFixed(6)}`);
+    if (deviation > 0.05) {
+      // More than 5% divergence — use SaucerSwap as it's the on-chain DEX
+      console.warn(`[AgentRunner] Pyth/SaucerSwap divergence ${(deviation * 100).toFixed(1)}% — using SaucerSwap`);
+      price = saucerPrice;
+    }
+  }
+
   console.log(`[AgentRunner] Price: $${price.toFixed(6)}`);
+
+  // Sync MockDEX reserves so getSwapQuote() returns accurate prices
+  if (process.env.HEDERA_NETWORK === 'testnet') {
+    await syncMockDexReserves(price);
+  }
 
     // ── Step 2b: Compute technical indicators from price history ────
   console.log('[AgentRunner] Step 2b: Computing technical indicators...');
