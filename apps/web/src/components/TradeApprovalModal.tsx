@@ -11,7 +11,6 @@ import {
   Hbar,
 } from '@hashgraph/sdk';
 import { useWalletStore } from '@/stores/walletStore';
-import { fetchBalances } from '@/lib/balance';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
 const NETWORK  = process.env.NEXT_PUBLIC_HEDERA_NETWORK || 'testnet';
@@ -39,7 +38,7 @@ export function TradeApprovalModal({
   signal, agentId, agentName, hcsTopicId, hcsSequenceNum,
   amount, price, confidence, onApprove, onReject
 }: TradeApprovalProps) {
-  const { signer, accountId, setBalances } = useWalletStore();
+  const { signer, accountId } = useWalletStore();
   const [executing, setExecuting] = useState(false);
   const [txHash, setTxHash] = useState<string | null>(null);
 
@@ -99,11 +98,9 @@ export function TradeApprovalModal({
         }),
       }).catch(() => {});
 
-      // ── Step 4: Refresh balances ──
-      const b = await fetchBalances(accountId);
-      setBalances(b.hbar, b.tusdt);
-
-      setTimeout(() => onApprove(), 2000);
+      // MockDEX is a simulated pool — no real token transfers occur,
+      // so no balance refresh is needed here. Proof chain is complete.
+      setTimeout(() => onApprove(), 3000);
     } catch (err: any) {
       console.error("Swap failed:", err);
       if (err?.message?.includes('User rejected') || err?.message?.includes('rejected')) {
@@ -175,21 +172,30 @@ export function TradeApprovalModal({
               </div>
             </div>
 
-            <div className="flex items-center gap-2 p-3 bg-blue-500/5 border border-blue-500/10 rounded-xl">
-               <ShieldCheckIcon size={14} className="text-blue-400" />
-               <p className="text-[10px] text-blue-300 leading-tight">
-                 This trade maps to SaucerSwap v2 pricing. Real balances will change upon approval.
-               </p>
+            <div className="space-y-2">
+              <div className="flex items-start gap-2 p-3 bg-[#00A9BA]/5 border border-[#00A9BA]/15 rounded-xl">
+                <ShieldCheckIcon size={14} className="text-[#00A9BA] mt-0.5 flex-shrink-0" />
+                <p className="text-[10px] text-[#94D5DB] leading-relaxed">
+                  AI decision already sealed on HCS (seq #{hcsSequenceNum}). Approving records the swap on-chain and embeds the HCS proof — completing the tamper-proof audit trail.
+                </p>
+              </div>
+              <div className="flex items-start gap-2 p-3 bg-yellow-500/5 border border-yellow-500/15 rounded-xl">
+                <span className="text-yellow-400 text-[11px] mt-0.5 flex-shrink-0">⚠</span>
+                <p className="text-[10px] text-yellow-300/80 leading-relaxed">
+                  Testnet MockDEX — trade is recorded on-chain but is a simulated pool. Wallet token balances do not change. HBAR gas fees still apply.
+                </p>
+              </div>
             </div>
           </div>
 
           {txHash ? (
             <div className="text-center py-4">
-              <div className="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-4 animate-bounce">
+              <div className="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
                 <ShieldCheckIcon size={32} className="text-green-500" />
               </div>
-              <p className="text-green-400 font-bold mb-1">Trade Executed!</p>
-              <p className="text-[10px] text-gray-500 font-mono truncate px-8">{txHash}</p>
+              <p className="text-green-400 font-bold mb-1">Proof Chain Complete ✓</p>
+              <p className="text-[10px] text-gray-400 mb-1">HCS decision #{hcsSequenceNum} → on-chain swap sealed</p>
+              <p className="text-[10px] text-gray-500 font-mono truncate px-4">{txHash}</p>
               <a
                 href={`https://hashscan.io/${NETWORK}/transaction/${txHash}`}
                 target="_blank"
@@ -197,7 +203,7 @@ export function TradeApprovalModal({
                 className="mt-3 inline-flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg transition-colors"
                 style={{ background: 'rgba(0,169,186,0.12)', color: '#00A9BA', border: '1px solid rgba(0,169,186,0.25)' }}
               >
-                View on HashScan ↗
+                Verify on HashScan ↗
               </a>
             </div>
           ) : (
