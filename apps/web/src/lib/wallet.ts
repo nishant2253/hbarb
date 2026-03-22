@@ -45,6 +45,8 @@ interface ConnectWalletResult {
   connector: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   session: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  signer: any;
 }
 
 // Open the wallet selection modal
@@ -59,7 +61,11 @@ export async function connectWallet(): Promise<ConnectWalletResult> {
     if (accountId) {
       const evmAddress = accountIdToEvmAddress(accountId)
       const walletName = session.peer.metadata.name || 'WalletConnect'
-      return { accountId, evmAddress, walletName, connector, session }
+      // Get the signer — used to sign ALL user transactions
+      const signer = connector.signers.find(
+        (s: any) => s.getAccountId().toString() === accountId
+      )
+      return { accountId, evmAddress, walletName, connector, session, signer }
     }
   }
 
@@ -84,7 +90,16 @@ export async function connectWallet(): Promise<ConnectWalletResult> {
         const evmAddress = accountIdToEvmAddress(accountId)
         const walletName = session.peer.metadata.name || 'WalletConnect'
         
-        resolve({ accountId, evmAddress, walletName, connector, session })
+        // Get the signer — used to sign ALL user transactions
+        const signer = connector.signers.find(
+          (s: any) => s.getAccountId().toString() === accountId
+        )
+        if (!signer) {
+          reject(new Error('No signer for account'))
+          return
+        }
+        
+        resolve({ accountId, evmAddress, walletName, connector, session, signer })
       } else if (isFinalCheck && !isResolving) {
         reject(new Error('No wallet session established. User closed modal.'))
       }
@@ -126,5 +141,7 @@ export function accountIdToEvmAddress(accountId: string): string {
   const parts = accountId.split('.')
   if (parts.length !== 3) return '0x0000000000000000000000000000000000000000'
   const num = parseInt(parts[2], 10)
-  return `0x${num.toString(16).padStart(40, '0')}`
+  // Convert decimal to hex and pad to 40 chars, then add 0x
+  const hex = num.toString(16).padStart(40, '0')
+  return `0x${hex}`
 }

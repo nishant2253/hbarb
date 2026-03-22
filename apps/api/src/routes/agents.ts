@@ -442,6 +442,30 @@ router.put('/:agentId/pause', async (req: Request, res: Response) => {
   }
 });
 
+// ── PUT /api/agents/:id/mode ──────────────────────────────────────
+router.put('/:agentId/mode', async (req: Request, res: Response) => {
+  try {
+    const agentId = String(req.params.agentId);
+    const { mode } = z.object({ mode: z.enum(['AUTO', 'MANUAL']) }).parse(req.body);
+
+    const updatedAgent = await prisma.agent.update({
+      where: { id: agentId },
+      data:  { executionMode: mode },
+    });
+
+    res.json({
+      agentId: updatedAgent.id,
+      executionMode: updatedAgent.executionMode,
+      message: `Execution mode changed to ${mode}`,
+    });
+  } catch (err) {
+    const msg = err instanceof z.ZodError 
+      ? err.errors.map(e => e.message).join(', ') 
+      : (err as Error).message;
+    res.status(400).json({ error: msg });
+  }
+});
+
 // ── POST /api/agents/:id/trigger ──────────────────────────────────
 // Added for Phase 7 Demo execution
 router.post("/:agentId/trigger", async (req, res) => {

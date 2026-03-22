@@ -1,5 +1,6 @@
 import { ethers } from "ethers";
 import { submitAgentDecision } from "@tradeagent/hedera";
+import prisma from "../db/prisma";
 
 // ■■ MockDEX ABI (only the functions we call) ■■■■■■■■■■■■■
 const MOCK_DEX_ABI = [
@@ -39,9 +40,19 @@ export async function executeTradeSignal(
 ): Promise<TradeResult> {
   const { signal, agentId, hcsTopicId, hederaClient } = params;
 
-  console.log(`\n[TradeAgent] Agent: ${agentId}`);
-  console.log(`[TradeAgent] Signal: ${signal} | Price: $${params.price}`);
   console.log(`[TradeAgent] Confidence: ${params.confidence}%`);
+
+  // ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+  // STEP 0 — CHECK EXECUTION MODE
+  // If MANUAL, we only log to HCS and skip automated swap.
+  // The frontend will handle the swap via HashPack.
+  // ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+  const agent = await prisma.agent.findUnique({
+    where: { id: agentId },
+    select: { executionMode: true }
+  });
+  const mode = agent?.executionMode || 'MANUAL';
+  console.log(`[TradeAgent] Execution Mode: ${mode}`);
 
   // ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
   // STEP 1 — LOG TO HCS FIRST (BEFORE ANY TRADE)
@@ -76,10 +87,10 @@ export async function executeTradeSignal(
     };
   }
 
-  // HOLD signal — log to HCS but do not trade
-  if (signal === "HOLD") {
-    console.log("[Trade] Signal is HOLD — no swap executed");
-    return { hcsResult, tradeResult: null, mode: "HOLD" };
+  // HOLD or MANUAL mode — log to HCS but do not execute automated swap
+  if (signal === "HOLD" || mode === "MANUAL") {
+    console.log(`[Trade] Signal is ${signal} | Mode is ${mode} — no automated swap executed`);
+    return { hcsResult, tradeResult: null, mode: signal === "HOLD" ? "HOLD" : "MANUAL_PENDING" as any };
   }
 
   // ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■

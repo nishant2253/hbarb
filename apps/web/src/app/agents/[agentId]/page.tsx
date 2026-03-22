@@ -8,6 +8,8 @@ import {
   ShieldCheckIcon, FileTextIcon, ActivityIcon, ClockIcon,
 } from 'lucide-react';
 
+import { TradeApprovalModal } from '@/components/TradeApprovalModal';
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
 const NETWORK  = process.env.NEXT_PUBLIC_HEDERA_NETWORK || 'testnet';
 
@@ -36,6 +38,15 @@ interface AgentDetail {
   listed:       boolean;
   configHash:   string;
   createdAt:    string;
+  executionMode: 'AUTO' | 'MANUAL';
+}
+
+interface PendingTrade {
+  signal: 'BUY' | 'SELL';
+  amount: bigint;
+  price: number;
+  confidence: number;
+  hcsSequenceNum: string;
 }
 
 function SignalBadge({ signal }: { signal: string }) {
@@ -61,6 +72,8 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
   const [history, setHistory] = useState<HCSMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
+  const [pendingTrade, setPendingTrade] = useState<PendingTrade | null>(null);
+  const [togglingMode, setTogglingMode] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -82,17 +95,51 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
         body:    JSON.stringify({ dryRun }),
       });
       const data = await res.json();
-      // Prepend result to history feed
-      setHistory(h => [{
+      
+      // Update history with the initial HCS record
+      const newEntry = {
         seq:       parseInt(data.hcsSequenceNumber),
         timestamp: data.hcsTimestamp,
         decision:  { signal: data.signal, confidence: data.confidence, price: data.price, reasoning: data.reasoning },
         hashscanUrl: `https://hashscan.io/${NETWORK}/topic/${agent?.hcsTopicId}`,
-      }, ...h]);
+      };
+      setHistory(h => [newEntry, ...h]);
+
+      // If we got a trade signal and we're NOT in a dry run, trigger the modal
+      if (!dryRun && (data.signal === 'BUY' || data.signal === 'SELL')) {
+        // Deterministic amounts for demo/testnet
+        const tradeAmount = data.signal === 'SELL' ? BigInt(5 * 1e8) : BigInt(1 * 1e6); // 5 HBAR or 1 USDT
+        setPendingTrade({
+          signal: data.signal,
+          amount: tradeAmount,
+          price: data.price,
+          confidence: data.confidence,
+          hcsSequenceNum: data.hcsSequenceNumber
+        });
+      }
     } catch (e) {
       console.error(e);
     } finally {
       setRunning(false);
+    }
+  };
+
+  const toggleMode = async (newMode: 'AUTO' | 'MANUAL') => {
+    if (!agent || togglingMode) return;
+    setTogglingMode(true);
+    try {
+      const res = await fetch(`${API_URL}/api/agents/${agentId}/mode`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: newMode }),
+      });
+      if (!res.ok) throw new Error("Failed to update mode");
+      setAgent({ ...agent, executionMode: newMode });
+    } catch (e) {
+      console.error(e);
+      alert("Failed to change execution mode.");
+    } finally {
+      setTogglingMode(false);
     }
   };
 
@@ -134,8 +181,8 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
 
       {/* ── Agent Header ─────────────────────────────────────────── */}
       <div className="glass-card p-6 mb-6">
-        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-          <div>
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+          <div className="flex-1">
             <div className="flex items-center gap-3 mb-2">
               <h1 className="text-2xl font-display font-bold" style={{ color: '#E2E8F0' }}>{agent.name}</h1>
               <span
@@ -150,10 +197,36 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
               </span>
             </div>
             <p className="text-sm" style={{ color: '#475569' }}>{agent.strategyType.replace('_', ' ')} · {agent.ownerId}</p>
+            
+            {/* Mode Switcher */}
+            <div className="mt-4 flex items-center gap-2">
+              <div 
+                className="flex p-1 rounded-xl bg-black/40 border border-white/5 w-fit"
+              >
+                {[
+                  { id: 'MANUAL', label: 'Manual Sign', sub: 'You sign trades' },
+                  { id: 'AUTO',   label: 'Auto Trade',  sub: 'Agent signs' }
+                ].map((m) => (
+                  <button
+                    key={m.id}
+                    disabled={togglingMode}
+                    onClick={() => toggleMode(m.id as any)}
+                    className={`px-4 py-2 rounded-lg transition-all duration-200 text-left ${
+                      agent.executionMode === m.id 
+                        ? 'bg-[#00A9BA] text-white shadow-lg shadow-[#00A9BA]/20' 
+                        : 'text-slate-500 hover:text-slate-300'
+                    }`}
+                  >
+                    <p className="text-xs font-bold uppercase tracking-wider leading-none">{m.label}</p>
+                    <p className={`text-[10px] mt-0.5 opacity-60 ${agent.executionMode === m.id ? 'text-white' : ''}`}>{m.sub}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
           {/* Actions */}
-          <div className="flex gap-2">
+          <div className="flex gap-2 shrink-0">
             <button
               onClick={() => triggerRun(true)}
               disabled={running}
@@ -312,6 +385,20 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
           {' '}— aBFT-guaranteed, tamper-proof.
         </div>
       </div>
+
+      {/* Trade Approval Modal */}
+      {pendingTrade && (
+        <TradeApprovalModal
+          {...pendingTrade}
+          agentId={agentId}
+          hcsTopicId={agent.hcsTopicId}
+          onApprove={() => {
+            setPendingTrade(null);
+            // Optionally refresh history here
+          }}
+          onReject={() => setPendingTrade(null)}
+        />
+      )}
     </div>
   );
 }

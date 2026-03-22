@@ -4,36 +4,39 @@ import { useRouter } from 'next/navigation'
 import { useWalletStore } from '@/stores/walletStore'
 import { connectWallet, disconnectWallet } from '@/lib/wallet'
 import { Loader2 } from 'lucide-react'
+import { useBalances } from '@/lib/balance'
+import { associateTUSDT } from '@/lib/tokenAssociation'
 
 export function WalletConnectButton() {
   const router = useRouter()
-  const { isConnected, accountId, hbarBalance, walletName, setWallet, setBalance, disconnect } = useWalletStore()
+  const { isConnected, accountId, hbarBalance, tusdtBalance, walletName, setWallet, disconnect } = useWalletStore()
   const [loading, setLoading] = useState(false)
 
-  // Fetch balance automatically on mount or when account changes
+  useBalances()
+  
+  // Auto-rehydrate signer on page load if session exists
   useEffect(() => {
-    if (isConnected && accountId) {
-      const fetchBal = async () => {
-        try {
-          const network = process.env.NEXT_PUBLIC_HEDERA_NETWORK || 'testnet'
-          const res = await fetch(`https://${network}.mirrornode.hedera.com/api/v1/accounts/${accountId}`)
-          const data = await res.json()
-          if (data?.balance?.balance !== undefined) {
-             setBalance(data.balance.balance / 100_000_000)
-          }
-        } catch (e) {
-          console.warn('Failed to fetch balance', e)
-        }
-      }
-      fetchBal()
+    if (isConnected && accountId && !useWalletStore.getState().signer) {
+      console.log("Rehydrating wallet session...");
+      connectWallet().then(({ accountId, evmAddress, walletName, connector, signer }) => {
+        setWallet(accountId, evmAddress, walletName, connector, signer);
+      }).catch(err => {
+        console.warn("Auto-rehydration failed:", err);
+      });
     }
-  }, [isConnected, accountId, setBalance])
+  }, [isConnected, accountId, setWallet]);
+
+
 
   async function handleConnect() {
     setLoading(true)
     try {
-      const { accountId, evmAddress, walletName, connector } = await connectWallet()
-      setWallet(accountId, evmAddress, walletName, connector)
+      const { accountId, evmAddress, walletName, connector, signer } = await connectWallet()
+      setWallet(accountId, evmAddress, walletName, connector, signer)
+
+      if (signer) {
+        await associateTUSDT(accountId, signer)
+      }
 
       // Balance relies on the useEffect we just added to fetch globally
       // Redirect to the wallet dashboard automatically
@@ -77,8 +80,10 @@ export function WalletConnectButton() {
         >
           <span className="w-2 h-2 rounded-full" style={{ background: '#10B981' }} />
           <span style={{ color: '#00A9BA', fontFamily: 'monospace' }}>{shortId}</span>
-          <span style={{ color: '#64748B' }}>·</span>
+          <span style={{ color: '#64748B' }}>|</span>
           <span style={{ color: '#E2E8F0' }}>{hbarBalance.toFixed(1)} ℏ</span>
+          <span style={{ color: '#64748B' }}>|</span>
+          <span style={{ color: '#E2E8F0' }}>${tusdtBalance.toFixed(2)} tUSDT</span>
         </div>
         <button
           onClick={handleDisconnect}

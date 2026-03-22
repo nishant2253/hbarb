@@ -1,0 +1,1086 @@
+
+
+n
+HashPack Wallet Approvals
+Every Hedera transaction signed by the user — gas fees from their wallet
+TradeAgent · Hedera APEX Hackathon 2026
+Structured Implementation Plan · User-Pays Model
+HashPack Signs
+Every TxWalletConnect v2
+User Wallet Pays
+Fees
+Real Tx Logs in
+HashPackMainnet-Identical UX
+All 4 Hedera
+Services
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 2
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+The Core Concept — Two Signers, Two Roles
+Right now all your TradeAgent backend transactions are signed by the operator account — a server-side wallet
+that pays all fees. What you want is user-pays model: every meaningful action that the user initiates requires their
+HashPack wallet to sign and pay. This mirrors exactly how mainnet dApps like SaucerSwap work.
+TransactionCurrentTarget (This Plan)
+HashPack
+Popup?
+Create agent (HFS + HCS + HCS-10
++ HSCS)
+Operator pays
+silently
+User signs 1
+bundled txn Yes
+Execute trade on MockDEX (swap)
+Operator pays
+silently
+User signs swap
+txn Yes
+Purchase strategy NFT (HTS
+atomic swap)
+Operator pays
+silently
+User signs atomic
+swapn Yes
+Mint/list strategy NFT on
+marketplaceOperator pays
+User signs listing
+txn Yes
+HCS decision logging (background
+cron)Operator pays
+Operator pays
+(background)
+n Silent
+(automated)
+Mirror Node reads (dashboard
+data)Free — no txFree — no tx
+n No tx
+needed
+n Background automated transactions (HCS decision logging every cycle) MUST stay on the operator account —
+you cannot ask the user to approve a transaction at 3am when BullMQ fires. Everything the USER initiates
+deliberately gets HashPack approval. Everything the AGENT does automatically stays on the operator.
+Expected HashPack Fee Prompts Per Action
+ActionHedera Services UsedFee Deducted from User Wallet
+Deploy new agent
+HFS + HCS + HSCS +
+HCS-10~0.10–0.15 HBAR
+Execute SELL trade
+(swap HBAR for tUSDT)HSCS (MockDEX) + HTS~0.001 HBAR + amount swapped
+Execute BUY trade
+(swap tUSDT for HBAR)HSCS (MockDEX) + HTS~0.001 HBAR + tUSDT allowance
+Purchase strategy NFTHTS atomic swapNFT price in HBAR + ~0.001 fee
+List strategy as NFTHTS mint + IPFS + HSCS~0.01 HBAR
+Associate tUSDT token
+(one-time)HTS associate~0.001 HBAR
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 3
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+PHAS
+E 1
+Wallet Connection Foundation
+WalletConnect setup · session store · signer extraction · tUSDT association
+Everything starts here. The wallet connection must return not just the account ID but a live signer object that can
+be  used  to  sign  any  subsequent  transaction.  This  signer  is  stored  in  Zustand  and  passed  to  every  function  that
+needs HashPack approval.
+1
+.
+1
+Core Wallet Library
+n apps/web/src/lib/wallet.ts — Foundation
+import {
+DAppConnector, HederaJsonRpcMethod,
+HederaSessionEvent, HederaChainId,
+} from "@hashgraph/hedera-wallet-connect"
+import { LedgerId, AccountId } from "@hashgraph/sdk"
+let connector: DAppConnector | null = null
+export async function initConnector() {
+if (connector) return connector
+connector = new DAppConnector(
+{
+name: "TradeAgent",
+description: "AI-Powered Trading Agents on Hedera",
+url: window.location.origin,
+icons: [`${window.location.origin}/logo.png`],
+},
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 4
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+LedgerId.TESTNET,
+process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID!,
+Object.values(HederaJsonRpcMethod),
+[HederaSessionEvent.ChainChanged,
+HederaSessionEvent.AccountsChanged],
+[HederaChainId.Testnet] // chainId 296
+)
+await connector.init({ logger: "error" })
+return connector
+}
+export async function connectWallet() {
+const conn = await initConnector()
+await conn.openModal() // Opens HashPack / WalletConnect modal
+const sessions = conn.walletConnectClient
+?.session.getAll() ?? []
+if (!sessions.length) throw new Error("No session")
+const session = sessions[0]
+// "hedera:testnet:0.0.XXXXX" → "0.0.XXXXX"
+const accountId = session.namespaces.hedera
+?.accounts[0]?.split(":")[2]
+if (!accountId) throw new Error("No account")
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 5
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+// Get the signer — used to sign ALL user transactions
+// This is what makes fees deduct from the USER wallet
+const signer = conn.signers.find(
+s => s.getAccountId().toString() === accountId
+)
+if (!signer) throw new Error("No signer for account")
+// Derive EVM address for HSCS calls
+const num = parseInt(accountId.split(".")[2])
+const evmAddress = `0x${num.toString(16).padStart(40,"0")}`
+return { accountId, evmAddress, signer, session }
+}
+export async function disconnectWallet() {
+if (!connector) return
+await connector.disconnectAll()
+connector = null
+}
+1
+.
+2
+Zustand Wallet Store — Store the Signer
+n apps/web/src/stores/walletStore.ts
+import { create } from "zustand"
+import { persist } from "zustand/middleware"
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 6
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+interface WalletState {
+accountId: string | null // "0.0.10386415"
+evmAddress: string | null // "0x...9e7bef"
+hbarBalance: number
+tusdtBalance: number
+isConnected: boolean
+signer: any | null // HashPack signer — signs all user txs
+setWallet: (data: {
+accountId: string
+evmAddress: string
+signer: any
+}) => void
+setBalances: (hbar: number, tusdt: number) => void
+disconnect: () => void
+}
+export const useWalletStore = create<WalletState>()(persist(
+(set) => ({
+accountId: null, evmAddress: null,
+hbarBalance: 0, tusdtBalance: 0,
+isConnected: false, signer: null,
+setWallet: ({ accountId, evmAddress, signer }) =>
+set({ accountId, evmAddress, signer, isConnected: true }),
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 7
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+setBalances: (hbar, tusdt) =>
+set({ hbarBalance: hbar, tusdtBalance: tusdt }),
+disconnect: () => set({
+accountId: null, evmAddress: null,
+signer: null, isConnected: false,
+hbarBalance: 0, tusdtBalance: 0,
+}),
+}),
+{ name: "tradeagent-wallet",
+// Do NOT persist signer — it cannot be serialized
+partialize: (s) => ({
+accountId: s.accountId,
+evmAddress: s.evmAddress,
+isConnected: s.isConnected,
+})
+}
+))
+1
+.
+3
+WalletConnect Button Component
+n apps/web/src/components/WalletConnectButton.tsx
+"use client"
+import { useState } from "react"
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 8
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+import { useWalletStore } from "@/stores/walletStore"
+import { connectWallet, disconnectWallet } from "@/lib/wallet"
+import { fetchBalances } from "@/lib/balance"
+import { Button } from "@/components/ui/button"
+import { Loader2 } from "lucide-react"
+export function WalletConnectButton() {
+const { isConnected, accountId,
+hbarBalance, tusdtBalance,
+setWallet, setBalances, disconnect } = useWalletStore()
+const [loading, setLoading] = useState(false)
+async function handleConnect() {
+setLoading(true)
+try {
+// Opens HashPack modal — user approves connection
+const { accountId, evmAddress, signer } = await connectWallet()
+setWallet({ accountId, evmAddress, signer })
+// Auto-associate tUSDT (one-time, ~0.001 HBAR)
+await associateTUSDT(accountId, signer)
+// Fetch initial balances from Mirror Node (free)
+const b = await fetchBalances(accountId)
+setBalances(b.hbar, b.tusdt)
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 9
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+} catch (e) {
+console.error("Connect failed:", e)
+} finally { setLoading(false) }
+}
+if (isConnected && accountId) {
+return (
+<div className="flex items-center gap-3 px-4 py-2
+bg-[#0D1B2A] rounded-xl border border-gray-800">
+<div>
+<p className="text-[10px] text-gray-400">HBAR</p>
+<p className="text-[#00A9BA] font-bold font-mono">
+{hbarBalance.toFixed(3)} n
+</p>
+</div>
+<div className="w-px h-8 bg-gray-700" />
+<div>
+<p className="text-[10px] text-gray-400">tUSDT</p>
+<p className="text-green-400 font-bold font-mono">
+${tusdtBalance.toFixed(2)}
+</p>
+</div>
+<div className="w-px h-8 bg-gray-700" />
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 10
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+<p className="text-[#00A9BA] text-xs font-mono">{accountId}</p>
+<Button size="sm" variant="outline"
+onClick={() => { disconnectWallet(); disconnect() }}
+className="text-xs border-gray-700">
+Disconnect
+</Button>
+</div>
+)
+}
+return (
+<Button onClick={handleConnect} disabled={loading}
+className="bg-[#00A9BA] hover:bg-[#007A8A] text-white font-bold">
+{loading
+? <><Loader2 className="animate-spin mr-2 h-4 w-4" />
+Connecting...</>
+: "Connect Wallet"}
+</Button>
+)
+}
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 11
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+PHAS
+E 2
+Agent Deployment — HashPack Signs Every Step
+Prompt builder approval · HFS + HCS + HSCS + HCS-10 · all from user wallet
+When the user clicks "Deploy Agent" in the prompt builder, HashPack must pop up for every Hedera transaction
+that costs fees. The goal is to batch as many operations as possible so the user does not see 4 separate popups
+— but each transaction that cannot be batched will require its own approval.
+u Transaction Flow — Agent Deployment
+#ActionWho SignsHashPack ShowsFee
+1
+User clicks "Build with AI" — Gemini generates config (free)No txNothingFree
+2
+User clicks "Deploy Agent" — HashPack opens for HFS FileCreateUser nStore agent config
+on-chain
+~0.05 n
+3
+HashPack opens for HCS TopicCreate (agent audit topic)User nCreate HCS audit topic~0.01 n
+4
+Backend signs HCS-10 registration (background — free)BackendSilent~0.01 n
+5
+HashPack opens for HSCS registerAgent() contract callUser nRegister agent
+on-chain
+~0.05 n
+6
+Backend schedules BullMQ job (no Hedera tx)BackendNothingFree
+n HashPack will show 3 separate approval popups during agent deployment (HFS + HCS + HSCS). This is
+intentional and mirrors how mainnet dApps work. Each popup shows the fee clearly. Total: ~0.11 HBAR
+from user wallet.
+2
+.
+1
+Deploy Agent — Frontend Handler
+n apps/web/src/app/create/page.tsx — deployAgent()
+"use client"
+import { useWalletStore } from "@/stores/walletStore"
+import {
+TopicCreateTransaction,
+FileCreateTransaction,
+Hbar,
+} from "@hashgraph/sdk"
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 12
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+export default function CreatePage() {
+const { signer, accountId } = useWalletStore()
+async function deployAgent(config: AgentConfig,
+configHash: string) {
+if (!signer || !accountId) {
+throw new Error("Wallet not connected")
+}
+setDeployStep("Storing config on Hedera File Service...")
+// nn TX 1: HFS FileCreate — user signs, user pays nnnn
+// HashPack popup #1: "Store agent config on HFS"
+const configBytes = Buffer.from(JSON.stringify(config))
+const fileCreateTx = await new FileCreateTransaction()
+.setContents(configBytes)
+.setFileMemo(`TradeAgent:${config.agentId}`)
+.setMaxTransactionFee(new Hbar(2))
+.freezeWithSigner(signer) // ← Uses user signer
+// This triggers HashPack popup for user approval
+const fileResponse = await fileCreateTx.executeWithSigner(signer)
+const fileReceipt = await fileResponse.getReceiptWithSigner(signer)
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 13
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+const hfsFileId = fileReceipt.fileId!.toString()
+console.log("HFS file created:", hfsFileId)
+setDeployStep("Creating HCS audit topic...")
+// nn TX 2: HCS TopicCreate — user signs, user pays nnn
+// HashPack popup #2: "Create HCS audit topic"
+const topicTx = await new TopicCreateTransaction()
+.setTopicMemo(`TradeAgent:${config.agentId}`)
+.setMaxTransactionFee(new Hbar(2))
+.freezeWithSigner(signer) // ← Uses user signer
+const topicResponse = await topicTx.executeWithSigner(signer)
+const topicReceipt = await topicResponse.getReceiptWithSigner(signer)
+const hcsTopicId = topicReceipt.topicId!.toString()
+console.log("HCS topic created:", hcsTopicId)
+setDeployStep("Registering agent on smart contract...")
+// nn TX 3: HSCS registerAgent() — user signs via ethers
+// HashPack popup #3: "Register agent on AgentRegistry"
+// We need ethers signer that routes through HashPack
+const ethersSigner = await getHashPackEthersSigner(signer)
+const registry = new ethers.Contract(
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 14
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+process.env.NEXT_PUBLIC_AGENT_REGISTRY_ADDRESS!,
+REGISTRY_ABI,
+ethersSigner // ← Routes through HashPack
+)
+const tx = await registry.registerAgent(
+config.agentId,
+configHash,
+hcsTopicId,
+hfsFileId,
+config.strategyType
+)
+await tx.wait()
+setDeployStep("Scheduling agent execution...")
+// nn Backend: HCS-10 + BullMQ (operator pays, silent) n
+await fetch("/api/agents/finalize-deploy", {
+method: "POST",
+body: JSON.stringify({
+agentId: config.agentId,
+config,
+hcsTopicId,
+hfsFileId,
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 15
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+contractTxHash: tx.hash,
+ownerAccountId: accountId,
+}),
+headers: { "Content-Type": "application/json" },
+})
+// Navigate to dashboard
+router.push(`/dashboard/${config.agentId}`)
+}
+}
+2
+.
+2
+HashPack Ethers Signer Bridge
+– This bridges the HashPack WalletConnect signer to ethers.js so that HSCS contract calls (registerAgent,
+executeSwap etc.) pop up HashPack for approval.
+n apps/web/src/lib/hashpackEthers.ts
+import { ethers } from "ethers"
+/**
+* Creates an ethers.js signer that routes transaction signing
+* through HashPack via WalletConnect.
+*
+* When a contract method is called with this signer,
+* HashPack opens and asks the user to approve.
+* Fee is deducted from the user's wallet.
+*/
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 16
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+export async function getHashPackEthersSigner(hederaSigner: any) {
+// Hedera JSON-RPC relay — makes Hedera EVM-compatible
+const provider = new ethers.JsonRpcProvider(
+"https://testnet.hashio.io/api"
+)
+// Custom signer that forwards signTransaction to HashPack
+const customSigner = {
+provider,
+getAddress: async () => {
+const accountId = hederaSigner.getAccountId().toString()
+const num = parseInt(accountId.split(".")[2])
+return `0x${num.toString(16).padStart(40, "0")}`
+},
+// This is what triggers the HashPack approval popup
+sendTransaction: async (tx: any) => {
+// Route through WalletConnect to HashPack
+const signedTx = await hederaSigner.signTransaction(tx)
+return provider.broadcastTransaction(signedTx)
+},
+signTransaction: async (tx: any) => {
+return hederaSigner.signTransaction(tx)
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 17
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+},
+connect: (p: any) => customSigner,
+}
+return customSigner as unknown as ethers.Signer
+}
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 18
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+PHAS
+E 3
+Trade Execution — HashPack Approves Every Swap
+SELL HBAR → tUSDT · BUY tUSDT → HBAR · real balance changes · HCS proof chain
+When the agent fires a BUY or SELL signal and the user has opted into manual approval mode, HashPack opens
+with the swap details. The user sees exactly how much HBAR they are spending or receiving before confirming.
+The fee comes from their wallet.
+u Transaction Flow — Trade Execution (User Approval Mode)
+#ActionWho SignsHashPack ShowsFee
+1
+BullMQ fires agent cycle — Gemini returns BUY/SELL signalBackendSilentFree
+2
+HCS decision logged (operator pays — background automated tx)BackendSilent~$0.000
+1
+3
+Frontend receives signal via websocket/pollingNo txDashboard updatesFree
+4
+If user approval mode ON: "Agent wants to SELL 5 HBAR" popupUser nSwap details + fee~0.001
+n +
+swap
+5
+MockDEX.sellHBARforUSDT() — HBAR leaves wallet, tUSDT arrivesUser nBalance update in
+HashPack
+Swap
+amount
+6
+HCS execution result logged (operator pays, silent)BackendSilent~$0.000
+1
+7
+Dashboard updates: new balances from Mirror NodeNo txBalance refreshesFree
+3
+.
+1
+Trade Approval Modal — Frontend
+n apps/web/src/components/TradeApprovalModal.tsx
+"use client"
+import { useState } from "react"
+import { ethers } from "ethers"
+import { useWalletStore } from "@/stores/walletStore"
+import { getHashPackEthersSigner } from "@/lib/hashpackEthers"
+import { fetchBalances } from "@/lib/balance"
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 19
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+const MOCK_DEX_ABI = [
+"function sellHBARforUSDT(string agentId, uint256 minOut, string hcsSeq, string topicId) payable
+returns (uint256)",
+"function buyHBARwithUSDT(string agentId, uint256 usdtIn, uint256 minHbarOut, string hcsSeq, string
+topicId) returns (uint256)",
+"function getSwapQuote(string direction, uint256 amountIn) view returns (uint256, uint256,
+uint256)",
+]
+interface TradeApprovalProps {
+signal: "BUY" | "SELL"
+agentId: string
+hcsTopicId: string
+hcsSequenceNum: string // The HCS seq# logged before this swap
+amount: bigint // tinybars for SELL, micro-USDT for BUY
+price: number
+confidence: number
+onApprove: () => void
+onReject: () => void
+}
+export function TradeApprovalModal({
+signal, agentId, hcsTopicId, hcsSequenceNum,
+amount, price, confidence, onApprove, onReject
+}: TradeApprovalProps) {
+const { signer, accountId, setBalances } = useWalletStore()
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 20
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+const [executing, setExecuting] = useState(false)
+const [txHash, setTxHash] = useState<string | null>(null)
+async function executeSwap() {
+if (!signer || !accountId) return
+setExecuting(true)
+try {
+// Get ethers signer that routes through HashPack
+const ethersSigner = await getHashPackEthersSigner(signer)
+const mockDex = new ethers.Contract(
+process.env.NEXT_PUBLIC_MOCK_DEX_ADDRESS!,
+MOCK_DEX_ABI,
+ethersSigner // ← HashPack will show approval popup
+)
+let tx: any
+if (signal === "SELL") {
+// Selling HBAR → getting tUSDT
+// HashPack shows: "Send X HBAR to MockDEX"
+const [minOut,,] = await mockDex.getSwapQuote(
+"HBAR_TO_USDT", amount
+)
+const slippageMin = minOut * 995n / 1000n
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 21
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+tx = await mockDex.sellHBARforUSDT(
+agentId,
+slippageMin,
+hcsSequenceNum,
+hcsTopicId,
+{
+value: amount, // Real HBAR from user wallet!
+gasLimit: 400_000,
+}
+)
+} else {
+// Buying HBAR with tUSDT
+// HashPack shows: "Approve X tUSDT spend"
+const [minOut,,] = await mockDex.getSwapQuote(
+"USDT_TO_HBAR", amount
+)
+const slippageMin = minOut * 995n / 1000n
+tx = await mockDex.buyHBARwithUSDT(
+agentId,
+amount,
+slippageMin,
+hcsSequenceNum,
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 22
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+hcsTopicId,
+{ gasLimit: 400_000 }
+)
+}
+const receipt = await tx.wait()
+setTxHash(receipt.hash)
+// Refresh balances immediately after swap
+const newBalances = await fetchBalances(accountId)
+setBalances(newBalances.hbar, newBalances.tusdt)
+onApprove()
+} catch (e: any) {
+if (e.code === 4001) {
+// User rejected in HashPack
+console.log("User rejected swap")
+onReject()
+} else {
+console.error("Swap failed:", e)
+}
+} finally {
+setExecuting(false)
+}
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 23
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+}
+return (
+<div className="fixed inset-0 bg-black/60 flex items-center
+justify-center z-50">
+<div className="bg-[#0D1B2A] border border-[#00A9BA] rounded-2xl
+p-6 w-96 shadow-2xl">
+{/* Header */}
+<div className="flex items-center gap-3 mb-6">
+<div className={`w-10 h-10 rounded-full flex items-center
+justify-center text-white font-bold ${
+signal === "SELL"
+? "bg-red-500" : "bg-green-500"}`}>
+{signal === "SELL" ? "↓" : "↑"}
+</div>
+<div>
+<h3 className="text-white font-bold text-lg">
+Agent wants to {signal}
+</h3>
+<p className="text-gray-400 text-sm">
+Confidence: {confidence}%
+</p>
+</div>
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 24
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+</div>
+{/* Swap details */}
+<div className="bg-[#0A1628] rounded-xl p-4 mb-4 space-y-3">
+<div className="flex justify-between">
+<span className="text-gray-400">You send</span>
+<span className="text-white font-bold font-mono">
+{signal === "SELL"
+? `${(Number(amount)/1e8).toFixed(4)} HBAR`
+: `${(Number(amount)/1e6).toFixed(2)} tUSDT`}
+</span>
+</div>
+<div className="flex justify-between">
+<span className="text-gray-400">You receive</span>
+<span className="text-[#00A9BA] font-bold font-mono">
+{signal === "SELL" ? "~tUSDT" : "~HBAR"}
+</span>
+</div>
+<div className="flex justify-between">
+<span className="text-gray-400">Current price</span>
+<span className="text-white font-mono">${price}</span>
+</div>
+<div className="flex justify-between">
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 25
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+<span className="text-gray-400">Network fee</span>
+<span className="text-red-400 font-mono">~0.001 HBAR</span>
+</div>
+<div className="flex justify-between text-xs">
+<span className="text-gray-500">HCS proof</span>
+<span className="text-[#00A9BA] font-mono">
+seq #{hcsSequenceNum}
+</span>
+</div>
+</div>
+{/* Buttons */}
+<div className="flex gap-3">
+<button onClick={onReject}
+className="flex-1 py-3 rounded-xl border border-gray-700
+text-gray-400 hover:border-red-500">
+Reject
+</button>
+<button onClick={executeSwap} disabled={executing}
+className="flex-1 py-3 rounded-xl bg-[#00A9BA]
+text-white font-bold hover:bg-[#007A8A]
+disabled:opacity-50">
+{executing ? "Approving..." : "Approve in HashPack"}
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 26
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+</button>
+</div>
+{txHash && (
+<a href={`https://hashscan.io/testnet/transaction/${txHash}`}
+target="_blank"
+className="block text-center text-xs text-[#00A9BA]
+mt-3 hover:underline">
+View on HashScan →
+</a>
+)}
+</div>
+</div>
+)
+}
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 27
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+PHAS
+E 4
+NFT Purchase — Real Atomic HTS Swap
+Buyer signs · HBAR leaves wallet · NFT arrives · 5% royalty auto-deducted
+This is where Hedera's HTS atomic swap shows its power. When a user buys a strategy NFT, a single HashPack
+approval covers both the HBAR payment AND the NFT transfer. Either both succeed or neither does. No escrow.
+The 5% royalty to the original creator is deducted automatically by the Hedera protocol.
+u Transaction Flow — NFT Purchase
+#ActionWho SignsHashPack ShowsFee
+1
+User clicks "Buy for 50 HBAR" on marketplace cardNo txNothing yetFree
+2
+Frontend builds atomic TransferTransaction (HBAR + NFT)No txBuilding txFree
+3
+HashPack popup: "Send 50 HBAR, receive NFT serial #42"User nFull details shown~0.001
+n
+4
+Atomic tx: HBAR → seller, NFT → buyer, 5% royalty auto-splitUser nBalance updatesNFT
+price
+5
+Backend clones agent for new owner, new HCS topic createdBackendSilent~0.01 n
+6
+New agent added to BullMQ queue under buyer's accountBackendSilentFree
+4
+.
+1
+NFT Purchase — Frontend
+n apps/web/src/app/marketplace/page.tsx — purchaseNFT()
+import {
+TransferTransaction, TokenId,
+NftId, AccountId, Hbar,
+} from "@hashgraph/sdk"
+import { useWalletStore } from "@/stores/walletStore"
+async function purchaseNFT(
+tokenId: string,
+serialNumber: number,
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 28
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+priceHbar: number,
+sellerAccountId: string
+) {
+const { signer, accountId, setBalances } = useWalletStore.getState()
+if (!signer || !accountId) throw new Error("Wallet not connected")
+const strategyTokenId = TokenId.fromString(tokenId)
+const buyerAccountId = AccountId.fromString(accountId)
+const sellerAccount = AccountId.fromString(sellerAccountId)
+const priceInTinybars = Math.floor(priceHbar * 100_000_000)
+// nn Build atomic swap transaction nnnnnnnnnnnnnnnnnnnnnn
+// This single transaction does BOTH:
+// 1. Transfer HBAR from buyer to seller
+// 2. Transfer NFT from seller to buyer
+// HashPack shows both in ONE approval popup.
+// HTS protocol auto-deducts 5% royalty to creator.
+const atomicSwapTx = await new TransferTransaction()
+// HBAR: buyer pays
+.addHbarTransfer(buyerAccountId, Hbar.fromTinybars(-priceInTinybars))
+// HBAR: seller receives (HTS deducts royalty automatically)
+.addHbarTransfer(sellerAccount, Hbar.fromTinybars(priceInTinybars))
+// NFT: seller → buyer
+.addNftTransfer(
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 29
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+new NftId(strategyTokenId, serialNumber),
+sellerAccount,
+buyerAccountId
+)
+.setMaxTransactionFee(new Hbar(5))
+.freezeWithSigner(signer)
+// nn This triggers HashPack approval popup nnnnnnnnnnnnnnn
+// User sees: "Send 50 HBAR, Receive NFT #42"
+const response = await atomicSwapTx.executeWithSigner(signer)
+const receipt = await response.getReceiptWithSigner(signer)
+console.log("NFT purchase complete!")
+console.log("Transaction ID:", response.transactionId.toString())
+// Refresh balances
+const newBalances = await fetchBalances(accountId)
+useWalletStore.getState().setBalances(
+newBalances.hbar, newBalances.tusdt
+)
+// Tell backend to clone agent for new owner
+await fetch("/api/marketplace/post-purchase", {
+method: "POST",
+body: JSON.stringify({
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 30
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+tokenId, serialNumber,
+buyerAccountId: accountId,
+txId: response.transactionId.toString(),
+}),
+headers: { "Content-Type": "application/json" },
+})
+return receipt
+}
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 31
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+PHAS
+E 5
+tUSDT Association & Balance Updates
+One-time association · real-time balance display · Mirror Node reads
+5
+.
+1
+tUSDT Token Association (one-time per wallet)
+– Must happen before the wallet can receive tUSDT from swaps. One HashPack approval, costs ~0.001 HBAR,
+never needed again.
+n apps/web/src/lib/tokenAssociation.ts
+import {
+TokenAssociateTransaction, TokenId, Hbar
+} from "@hashgraph/sdk"
+export async function associateTUSDT(
+accountId: string,
+signer: any
+): Promise<boolean> {
+const tUSDTTokenId = TokenId.fromString(
+process.env.NEXT_PUBLIC_TEST_USDT_TOKEN_ID!
+)
+// Check if already associated (Mirror Node — free)
+const res = await fetch(
+`https://testnet.mirrornode.hedera.com/api/v1/accounts/${accountId}/tokens` +
+`?token.id=${tUSDTTokenId}`
+)
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 32
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+const data = await res.json()
+if (data.tokens?.length > 0) {
+console.log("tUSDT already associated")
+return true
+}
+// nn HashPack popup: "Associate tUSDT token" nnnnnnnnnnnnn
+const assocTx = await new TokenAssociateTransaction()
+.setAccountId(accountId)
+.setTokenIds([tUSDTTokenId])
+.setMaxTransactionFee(new Hbar(2))
+.freezeWithSigner(signer)
+// User approves in HashPack — ~0.001 HBAR
+await (await assocTx.executeWithSigner(signer))
+.getReceiptWithSigner(signer)
+console.log("n tUSDT associated with", accountId)
+return true
+}
+5
+.
+2
+Real-Time Balance Fetcher
+n apps/web/src/lib/balance.ts
+interface Balances { hbar: number; tusdt: number }
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 33
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+export async function fetchBalances(
+accountId: string
+): Promise<Balances> {
+const tUSDTId = process.env.NEXT_PUBLIC_TEST_USDT_TOKEN_ID!
+const base = "https://testnet.mirrornode.hedera.com/api/v1"
+// Fetch account (includes HBAR balance)
+const [accRes, tokRes] = await Promise.all([
+fetch(`${base}/accounts/${accountId}`),
+fetch(`${base}/accounts/${accountId}/tokens?token.id=${tUSDTId}`),
+])
+const accData = await accRes.json()
+const tokData = await tokRes.json()
+const hbar = (accData.balance?.balance ?? 0) / 1e8
+const tusdt = (tokData.tokens?.[0]?.balance ?? 0) / 1e6
+return { hbar, tusdt }
+}
+// Hook: auto-refresh every 5 seconds
+export function useBalances() {
+const { accountId, setBalances } = useWalletStore()
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 34
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+useEffect(() => {
+if (!accountId) return
+const refresh = async () => {
+const b = await fetchBalances(accountId)
+setBalances(b.hbar, b.tusdt)
+}
+refresh()
+const interval = setInterval(refresh, 5000)
+return () => clearInterval(interval)
+}, [accountId])
+}
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 35
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+PHAS
+E 6
+Agent Settings — Approval Mode Toggle
+Auto-execute vs manual approval · user controls trade execution
+Give  users  the  choice:  auto-execute  trades  (operator  handles  swaps,  fees  from  operator  wallet)  or  manual
+approval mode (every trade requires HashPack sign, fees from user wallet). Most real trading platforms offer this.
+The HCS audit trail is identical in both modes.
+n apps/web/src/app/dashboard/[agentId]/settings.tsx
+"use client"
+import { useState } from "react"
+export function AgentExecutionSettings({ agentId }: { agentId: string }) {
+const [mode, setMode] = useState<"AUTO" | "MANUAL">("MANUAL")
+return (
+<div className="bg-[#0D1B2A] rounded-xl p-5
+border border-gray-800">
+<h3 className="text-white font-bold mb-4">
+Trade Execution Mode
+</h3>
+{/* AUTO mode */}
+<div
+onClick={() => setMode("AUTO")}
+className={`p-4 rounded-xl mb-3 cursor-pointer border-2
+transition-colors ${mode === "AUTO"
+? "border-[#00A9BA] bg-[#00A9BA]/10"
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 36
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+: "border-gray-800 hover:border-gray-700"}`}
+>
+<div className="flex items-center justify-between mb-1">
+<span className="text-white font-bold">
+Auto Execute
+</span>
+{mode === "AUTO" && (
+<span className="text-[#00A9BA] text-xs font-bold">
+ACTIVE
+</span>
+)}
+</div>
+<p className="text-gray-400 text-sm">
+Agent executes trades automatically. Operator wallet
+pays gas fees. No HashPack approval needed.
+Recommended for set-and-forget strategies.
+</p>
+</div>
+{/* MANUAL mode */}
+<div
+onClick={() => setMode("MANUAL")}
+className={`p-4 rounded-xl cursor-pointer border-2
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 37
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+transition-colors ${mode === "MANUAL"
+? "border-[#00A9BA] bg-[#00A9BA]/10"
+: "border-gray-800 hover:border-gray-700"}`}
+>
+<div className="flex items-center justify-between mb-1">
+<span className="text-white font-bold">
+Manual Approval
+</span>
+{mode === "MANUAL" && (
+<span className="text-[#00A9BA] text-xs font-bold">
+ACTIVE
+</span>
+)}
+</div>
+<p className="text-gray-400 text-sm">
+Each trade requires your HashPack approval.
+Fees deducted from your wallet.
+Transactions visible in HashPack history.
+Mainnet-identical experience.
+</p>
+</div>
+<button
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 38
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+onClick={() => saveMode(agentId, mode)}
+className="w-full mt-4 py-3 bg-[#00A9BA] rounded-xl
+text-white font-bold hover:bg-[#007A8A]">
+Save Settings
+</button>
+</div>
+)
+}
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 39
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+PHAS
+E 7
+Complete Run Order & Verification
+Full sequence · what shows in HashPack · HashScan verification links
+7
+.
+1
+Complete Setup & Run Sequence
+n Run in this exact order
+# nn 1. Install dependencies nnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+cd packages/contracts && npm install
+cd apps/web && npm install
+cd apps/api && npm install
+# nn 2. Compile contracts nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+cd packages/contracts && npx hardhat compile
+# nn 3. Deploy tUSDT + MockDEX + fund them nnnnnnnnnnnnnnnn
+npx ts-node scripts/deployAll.ts
+# → TEST_USDT_TOKEN_ID=0.0.XXXXX saved to .env
+# → MOCK_DEX_ADDRESS=0x... saved to .env
+# nn 4. Copy env vars to frontend .env.local nnnnnnnnnnnnnn
+echo "NEXT_PUBLIC_TEST_USDT_TOKEN_ID=$(grep TEST_USDT_TOKEN_ID apps/api/.env | cut -d= -f2)" >>
+apps/web/.env.local
+echo "NEXT_PUBLIC_MOCK_DEX_ADDRESS=$(grep MOCK_DEX_ADDRESS apps/api/.env | cut -d= -f2)" >>
+apps/web/.env.local
+echo "NEXT_PUBLIC_AGENT_REGISTRY_ADDRESS=$(grep AGENT_REGISTRY_ADDRESS apps/api/.env | cut -d= -f2)"
+>> apps/web/.env.local
+echo "NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=YOUR_PROJECT_ID" >> apps/web/.env.local
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 40
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+# nn 5. Start backend nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+cd apps/api && npm run dev
+# nn 6. Start frontend nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+cd apps/web && npm run dev
+# nn 7. Open browser at localhost:3000 nnnnnnnnnnnnnnnnnnnn
+# Click "Connect Wallet" → HashPack opens
+# Approve tUSDT association (~0.001 HBAR)
+# Check HashPack: tUSDT appears in token list
+# nn 8. Deploy an agent nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+# Type prompt → Build with AI → Deploy
+# HashPack popup 1: Store config in HFS (~0.05 HBAR)
+# HashPack popup 2: Create HCS topic (~0.01 HBAR)
+# HashPack popup 3: Register on contract (~0.05 HBAR)
+# Total: ~0.11 HBAR deducted from your wallet
+# nn 9. Trigger a trade nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+curl -X POST http://localhost:3001/api/agents/YOUR_ID/trigger
+# → Frontend receives signal via polling
+# → TradeApprovalModal opens
+# → Click "Approve in HashPack"
+# → HashPack popup: "Send X HBAR"
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 41
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+# → HBAR decreases, tUSDT increases in HashPack
+# nn 10. Verify everything on HashScan nnnnnnnnnnnnnnnnnnnn
+# Your account: hashscan.io/testnet/account/0.0.10386415
+# tUSDT token: hashscan.io/testnet/token/TEST_USDT_TOKEN_ID
+# MockDEX: hashscan.io/testnet/contract/MOCK_DEX_HEDERA_ID
+# HCS topic: hashscan.io/testnet/topic/YOUR_HCS_TOPIC_ID
+7
+.
+2
+What You See in HashPack After Full Flow
+EventWhat HashPack Shows
+Fee
+Deducted
+Connect walletApproved connection to TradeAgent0 HBAR
+Associate
+tUSDTTokenAssociate tx — tUSDT appears in token list
+~0.001
+HBAR
+Deploy agent
+(HFS)FileCreate tx — store config on Hedera~0.05 HBAR
+Deploy agent
+(HCS)TopicCreate tx — create audit topic~0.01 HBAR
+Deploy agent
+(HSCS)ContractCall registerAgent()~0.05 HBAR
+SELL trade
+approvalContractCall sellHBARforUSDT() — HBAR decreases, tUSDT increases
+Swap +
+~0.001
+HBAR
+BUY trade
+approvalContractCall buyHBARwithUSDT() — tUSDT decreases, HBAR increases
+tUSDT +
+~0.001
+HBAR
+NFT purchaseTransferTransaction — HBAR out, NFT in, 5% royalty auto-split
+NFT price +
+~0.001
+HBAR
+Complete Picture — All Transactions & Who Pays
+
+TradeAgent  —  HashPack Wallet Approval & User-Pays Transaction PlanHedera APEX Hackathon 2026  |  Page 42
+TradeAgent  •  HashPack Signing Plan  •  Confidential
+TransactionSignerPays Fees
+HashPack
+Popup
+tUSDT token associationUserUser walletn Yes
+HFS: store agent configUserUser walletn Yes
+HCS: create agent topicUserUser walletn Yes
+HSCS: registerAgent()UserUser walletn Yes
+HCS-10: register in ecosystem
+Operator
+(backend)Operatorn Silent
+BullMQ: schedule cron jobNo txNo txn No tx
+HCS: log BUY/SELL decision
+Operator
+(backend)Operatorn Silent
+MockDEX.sellHBARforUSDT()UserUser walletn Yes
+MockDEX.buyHBARwithUSDT(
+)UserUser walletn Yes
+HCS: log execution result
+Operator
+(backend)Operatorn Silent
+HTS: mint strategy NFT
+Operator
+(backend)Operatorn Silent
+HTS: atomic NFT purchaseUser (buyer)User walletn Yes
+Mirror Node reads (dashboard)No txFreen No tx
+n Total HBAR deducted from user wallet for a complete demo run: ~0.12 HBAR for deployment + ~0.001 HBAR
+per trade approval + NFT purchase price. With 100 testnet HBAR from the faucet, you can run the full demo
+hundreds of times.

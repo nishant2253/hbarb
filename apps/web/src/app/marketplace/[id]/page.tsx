@@ -45,12 +45,22 @@ function AgentAvatar({ name, size = 64 }: { name: string; size?: number }) {
   );
 }
 
+import { 
+  TransferTransaction, TokenId, NftId, 
+  AccountId, Hbar 
+} from "@hashgraph/sdk";
+import { useWalletStore } from '@/stores/walletStore';
+import { fetchBalances } from '@/lib/balance';
+
+const STRATEGY_TOKEN_ID = "0.0.8316389"; // From backend config
+
 export default function MarketplaceDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [listing, setListing] = useState<ListingDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [buying,  setBuying]  = useState(false);
   const [bought,  setBought]  = useState(false);
+  const { signer, accountId, setBalances } = useWalletStore();
 
   useEffect(() => {
     fetch(`${API_URL}/api/marketplace/${id}`)
@@ -61,11 +71,56 @@ export default function MarketplaceDetailPage({ params }: { params: Promise<{ id
   }, [id]);
 
   const handleBuy = async () => {
+    if (!signer || !accountId || !listing || !listing.serialNumber) return;
+    
     setBuying(true);
-    // In production: trigger WalletConnect transaction; for demo just show success
-    await new Promise(r => setTimeout(r, 1500));
-    setBought(true);
-    setBuying(false);
+    try {
+      const tokenId = TokenId.fromString(STRATEGY_TOKEN_ID);
+      const buyerId = AccountId.fromString(accountId);
+      const sellerId = AccountId.fromString(listing.ownerId);
+      const priceTinybars = Math.floor((listing.priceHbar || 0) * 1e8);
+
+      // Atomic swap: HBAR from buyer to seller, NFT from seller to buyer
+      // Hedera HTS auto-deducts royalties (5%) at protocol level
+      const atomicSwapTx = await new TransferTransaction()
+        .addHbarTransfer(buyerId, Hbar.fromTinybars(-priceTinybars))
+        .addHbarTransfer(sellerId, Hbar.fromTinybars(priceTinybars))
+        .addNftTransfer(new NftId(tokenId, listing.serialNumber), sellerId, buyerId)
+        .setMaxTransactionFee(new Hbar(5))
+        .freezeWithSigner(signer);
+
+      const response = await atomicSwapTx.executeWithSigner(signer);
+      await response.getReceiptWithSigner(signer);
+
+      // Tell backend to clone agent and update ownership
+      const postRes = await fetch(`${API_URL}/api/marketplace/post-purchase`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tokenId: STRATEGY_TOKEN_ID,
+          serialNumber: listing.serialNumber,
+          buyerAccountId: accountId,
+          txId: response.transactionId.toString(),
+        }),
+      });
+
+      if (!postRes.ok) throw new Error("Backend post-purchase failed");
+
+      setBought(true);
+      
+      // Refresh balances
+      const b = await fetchBalances(accountId);
+      setBalances(b.hbar, b.tusdt);
+    } catch (err: any) {
+      console.error("NFT Purchase failed:", err);
+      if (err?.message?.includes('User rejected')) {
+        alert("Purchase cancelled: Transaction rejected in wallet.");
+      } else {
+        alert(`Purchase failed: ${err.message}`);
+      }
+    } finally {
+      setBuying(false);
+    }
   };
 
   if (loading) {

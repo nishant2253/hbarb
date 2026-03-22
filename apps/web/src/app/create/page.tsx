@@ -2,12 +2,26 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useAgentStore, AgentConfig } from '@/stores/agentStore';
-import { useWalletStore } from '@/stores/walletStore';
-import { connectWallet } from '@/lib/wallet';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { SendIcon, BotIcon, UserIcon, ZapIcon, ArrowRightIcon, SparklesIcon, Loader2 } from 'lucide-react';
+import { 
+  SendIcon, BotIcon, UserIcon, ZapIcon, 
+  ArrowRightIcon, SparklesIcon, Loader2 
+} from 'lucide-react';
+import { 
+  TopicCreateTransaction, 
+  FileCreateTransaction, 
+  Hbar 
+} from '@hashgraph/sdk';
+import { ethers } from 'ethers';
+
+import { useAgentStore, AgentConfig } from '@/stores/agentStore';
+import { useWalletStore } from '@/stores/walletStore';
+import { getHashPackEthersSigner } from '@/lib/hashpackEthers';
+
+const REGISTRY_ABI = [
+  "function registerAgent(string id, bytes32 configHash, string hcsTopicId, string hfsFileId, string strategyType) external"
+];
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
 
@@ -26,7 +40,24 @@ interface Message {
   error?:  boolean;
 }
 
-function MessageBubble({ msg }: { msg: Message }) {
+function DeployingModal({ step }: { step: string }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="bg-[#0D1B2A] border border-white/10 p-8 rounded-2xl shadow-2xl max-w-sm w-full text-center">
+        <Loader2 className="w-12 h-12 text-[#00A9BA] animate-spin mx-auto mb-4" />
+        <h3 className="text-xl font-bold text-white mb-2">Deploying Agent</h3>
+        <p className="text-gray-400 text-sm">{step}</p>
+        <div className="mt-6 flex justify-center gap-1">
+           {[0, 1, 2].map(i => (
+             <div key={i} className="w-1.5 h-1.5 rounded-full bg-[#00A9BA]/30 animate-pulse" />
+           ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MessageBubble({ msg, onDeploy }: { msg: Message, onDeploy: (config: AgentConfig, hash: string) => void }) {
   const isUser = msg.role === 'user';
   return (
     <motion.div
@@ -47,117 +78,167 @@ function MessageBubble({ msg }: { msg: Message }) {
       </div>
 
       {/* Bubble */}
-      <div
-        className="max-w-[75%] rounded-xl px-4 py-3 text-sm"
-        style={{
-          background: isUser ? 'rgba(0,169,186,0.1)' : 'rgba(21,101,192,0.08)',
-          border: `1px solid ${isUser ? 'rgba(0,169,186,0.2)' : 'rgba(21,101,192,0.15)'}`,
-          color: msg.error ? '#EF4444' : '#E2E8F0',
-          lineHeight: 1.6,
-        }}
-      >
-        {msg.content}
+      <div className="flex flex-col gap-2 max-w-[80%]">
+        <div 
+          className={`px-4 py-3 rounded-2xl text-sm leading-relaxed ${isUser ? 'bg-[#00A9BA]/10 rounded-tr-none' : 'bg-white/5 rounded-tl-none'}`}
+          style={{ border: isUser ? '1px solid rgba(0,169,186,0.15)' : '1px solid rgba(255,255,255,0.06)' }}
+        >
+          <p style={{ color: isUser ? '#E2E8F0' : '#CBD5E1' }}>{msg.content}</p>
 
-        {/* Deploy card */}
-        {msg.config && (
-          <motion.div
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-            className="mt-3 p-3 rounded-lg"
-            style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.08)' }}
-          >
-            <div className="grid grid-cols-2 gap-2 text-xs mb-3">
-              {[
-                ['Strategy', msg.config.strategyType],
-                ['Asset',    msg.config.asset],
-                ['Timeframe',msg.config.timeframe],
-                ['Risk',     msg.config.riskLevel],
-              ].map(([k,v]) => (
-                <div key={k}>
-                  <span style={{ color: '#475569' }}>{k}: </span>
-                  <span style={{ color: '#00A9BA', fontWeight: 600 }}>{String(v)}</span>
-                </div>
-              ))}
+          {msg.config && msg.configHash && (
+            <div className="mt-4 p-3 rounded-xl bg-black/40 border border-white/5">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-[10px] uppercase tracking-wider text-gray-500 font-bold">Proposal</span>
+                <span className="text-[10px] font-mono text-[#00A9BA]">{msg.configHash.slice(0, 12)}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs mb-4">
+                <div className="text-gray-400">Strategy: <span className="text-white">{msg.config.strategyType}</span></div>
+                <div className="text-gray-400">Asset: <span className="text-white">{msg.config.asset}</span></div>
+                <div className="text-gray-400">Risk: <span className="text-white">{msg.config.riskLevel}</span></div>
+              </div>
+              <button
+                onClick={() => onDeploy(msg.config!, msg.configHash!)}
+                className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-[#00A9BA] hover:bg-[#008A9A] text-white font-bold transition-all text-xs cursor-pointer"
+              >
+                <ZapIcon size={12} />
+                Deploy Agent
+              </button>
             </div>
-            <DeployButton msg={msg} />
-          </motion.div>
-        )}
+          )}
+        </div>
       </div>
     </motion.div>
   );
 }
 
-function DeployButton({ msg }: { msg: Message }) {
-  const [deploying, setDeploying] = useState(false);
-  const router = useRouter();
-
-  async function handleDeploy() {
-    setDeploying(true);
-    try {
-      let walletStatus = useWalletStore.getState();
-      
-      if (!walletStatus.isConnected || !walletStatus.accountId) {
-        // Trigger modal
-        const { accountId, evmAddress, walletName, connector } = await connectWallet();
-        useWalletStore.getState().setWallet(accountId, evmAddress, walletName, connector);
-        walletStatus = useWalletStore.getState();
-      }
-
-      // Backend route /api/agents/deploy handles all onchain logic
-      const res = await fetch(`${API_URL}/api/agents/deploy`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          config: msg.config!,
-          configHash: msg.configHash!, // We need this from msg
-          walletAddress: walletStatus.accountId, // 0.0.XXXXX
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Deploy failed');
-
-      router.push(`/agents/${data.agentId}`);
-    } catch (err: any) {
-      if (!err.message?.includes('User closed modal')) {
-        alert(`Deploy failed: ${err.message}`);
-      } else {
-        console.log('Wallet connection cancelled by user during deploy');
-      }
-    } finally {
-      setDeploying(false);
-    }
-  }
-
-  return (
-    <button
-      onClick={handleDeploy}
-      disabled={deploying}
-      className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-bold cursor-pointer transition-all duration-200 ${deploying ? 'opacity-70 cursor-not-allowed' : 'hover:scale-[1.02]'}`}
-      style={{ background: 'linear-gradient(135deg, #00A9BA, #1565C0)', color: '#fff' }}
-    >
-      {deploying ? (
-        <><Loader2 size={12} className="animate-spin" /> Deploying to Hedera...</>
-      ) : (
-        <><ZapIcon size={12} /> Deploy to Hedera <ArrowRightIcon size={12} /></>
-      )}
-    </button>
-  );
-}
-
 export default function CreatePage() {
+  const router = useRouter();
   const { setBuildingConfig } = useAgentStore();
+  const { signer, accountId } = useWalletStore();
+  
   const [messages, setMessages] = useState<Message[]>([
     { role: 'assistant', content: "Hello! I'm your TradeAgent AI. Describe the trading strategy you want to deploy on Hedera. I'll configure the agent and prepare it for deployment." },
   ]);
   const [input,   setInput]   = useState('');
   const [loading, setLoading] = useState(false);
+  const [deployStep, setDeployStep] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  async function deployAgent(config: AgentConfig, configHash: string) {
+    if (!signer || !accountId) {
+      alert("Please connect your wallet first!");
+      return;
+    }
+
+    try {
+      // 1. Storing config on HFS
+      setDeployStep("Step 1/3: Storing strategy on Hedera File Service...");
+      const configBytes = Buffer.from(JSON.stringify(config));
+      const fileCreateTx = await new FileCreateTransaction()
+        .setContents(configBytes)
+        .setFileMemo(`TradeAgent:${config.agentId}`)
+        .setMaxTransactionFee(new Hbar(5))
+        .freezeWithSigner(signer);
+      
+      const fileResponse = await fileCreateTx.executeWithSigner(signer);
+      const fileReceipt = await fileResponse.getReceiptWithSigner(signer);
+      const hfsFileId = fileReceipt.fileId!.toString();
+      console.log("HFS file created:", hfsFileId);
+
+      // 2. Creating HCS audit topic
+      setDeployStep("Step 2/3: Creating HCS audit topic...");
+      const topicTx = await new TopicCreateTransaction()
+        .setTopicMemo(`TradeAgent:${config.agentId}`)
+        .setMaxTransactionFee(new Hbar(5))
+        .freezeWithSigner(signer);
+      
+      const topicResponse = await topicTx.executeWithSigner(signer);
+      const topicReceipt = await topicResponse.getReceiptWithSigner(signer);
+      const hcsTopicId = topicReceipt.topicId!.toString();
+      console.log("HCS topic created:", hcsTopicId);
+
+      // 3. Registering agent on contract via ethers bridge
+      setDeployStep("Step 3/3: Registering agent on AgentRegistry...");
+      const ethersSigner = await getHashPackEthersSigner(signer);
+      const registry = new ethers.Contract(
+        process.env.NEXT_PUBLIC_AGENT_REGISTRY_ADDRESS!,
+        REGISTRY_ABI,
+        ethersSigner
+      );
+
+      console.log("Preparing registerAgent transaction via manual encoding...");
+      
+      const _agentId = config.agentId;
+      const _configHash = configHash;
+      const _hcsTopicId = hcsTopicId;
+      const _hfsFileId = hfsFileId;
+      const _strategyType = config.strategyType;
+
+      if (!_agentId) throw new Error("Missing agentId");
+      if (!_configHash || !_configHash.startsWith('0x')) throw new Error("Missing or invalid configHash");
+      if (!_hcsTopicId) throw new Error("Missing hcsTopicId");
+      if (!_hfsFileId) throw new Error("Missing hfsFileId");
+      if (!_strategyType) throw new Error("Missing strategyType");
+
+      console.log("Arguments validated:", { _agentId, _configHash, _hcsTopicId, _hfsFileId, _strategyType });
+
+      // ⚠️ CRITICAL: Bypass ethers.Contract's high-level call which is causing recursion/TypeError
+      const data = registry.interface.encodeFunctionData("registerAgent", [
+        _agentId,
+        _configHash,
+        _hcsTopicId,
+        _hfsFileId,
+        _strategyType
+      ]);
+
+      console.log("Encoded transaction data successfully");
+
+      const txRequest = {
+        to: process.env.NEXT_PUBLIC_AGENT_REGISTRY_ADDRESS!,
+        data: data,
+        gasLimit: 2000000 
+      };
+
+      console.log("Sending encoded transaction via signer...");
+      const tx = await ethersSigner.sendTransaction(txRequest);
+      console.log("Transaction sent! Hash:", tx.hash);
+      
+      setDeployStep("Step 3/3: Waiting for block confirmation...");
+      await tx.wait();
+      
+      setDeployStep("Finalizing agent configuration...");
+      // Backend finalize — performs HCS-10 and BullMQ setup (operator pays, silent)
+      const finalizeRes = await fetch(`${API_URL}/api/agents/finalize-deploy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agentId: config.agentId,
+          config,
+          hcsTopicId,
+          hfsFileId,
+          contractTxHash: tx.hash,
+          ownerAccountId: accountId,
+        }),
+      });
+
+      if (!finalizeRes.ok) throw new Error("Backend finalization failed");
+
+      router.push(`/dashboard/${config.agentId}`);
+    } catch (err: any) {
+      console.error("Deployment failed:", err);
+      if (err?.message?.includes('User rejected')) {
+         alert("Deployment cancelled: Transaction rejected in wallet.");
+      } else {
+         alert(`Deployment failed: ${err.message}`);
+      }
+    } finally {
+      setDeployStep(null);
+    }
+  }
 
   async function sendMessage(prompt = input) {
     if (!prompt.trim() || loading) return;
@@ -175,13 +256,14 @@ export default function CreatePage() {
 
       if (!res.ok) throw new Error(data.error || 'Failed to build agent');
 
-      setBuildingConfig(data.config);
+      const finalConfig = { ...data.config, agentId: data.agentId };
+      setBuildingConfig(finalConfig);
       setMessages(m => [
         ...m,
         {
           role: 'assistant',
-          content: `Agent configured! Strategy: ${data.config.strategyType}, Asset: ${data.config.asset}. ConfigHash: ${data.configHash.slice(0, 18)}... Ready to deploy on Hedera?`,
-          config: data.config,
+          content: `Agent configured! Strategy: ${data.config.strategyType}, Asset: ${data.config.asset}. ConfigHash: ${data.configHash.slice(0, 12)}... Ready to deploy on Hedera?`,
+          config: finalConfig, 
           configHash: data.configHash,
         },
       ]);
@@ -197,6 +279,8 @@ export default function CreatePage() {
 
   return (
     <div className="flex h-[calc(100vh-64px)]" style={{ background: 'var(--ta-bg)' }}>
+      {deployStep && <DeployingModal step={deployStep} />}
+
       {/* ── Left Sidebar ───────────────────────────────────────── */}
       <aside
         className="w-56 flex-shrink-0 flex flex-col p-4 hidden md:flex"
@@ -286,7 +370,7 @@ export default function CreatePage() {
         <div className="flex-1 overflow-y-auto px-6 py-6 space-y-4">
           <AnimatePresence initial={false}>
             {messages.map((msg, i) => (
-              <MessageBubble key={i} msg={msg} />
+              <MessageBubble key={i} msg={msg} onDeploy={deployAgent} />
             ))}
           </AnimatePresence>
 
@@ -331,6 +415,7 @@ export default function CreatePage() {
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
+                cursor: 'pointer'
               }}
             >
               {p}

@@ -6,8 +6,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL") // Supabase connection string
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL")
 }
 
 // ── Agent Model ──────────────────────────────────────────────────
@@ -33,6 +34,7 @@ model Agent {
 
   // Status
   active          Boolean     @default(true)
+  executionMode   String      @default("MANUAL") // AUTO | MANUAL
 
   // Marketplace
   listed          Boolean     @default(false)
