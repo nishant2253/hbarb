@@ -2,19 +2,25 @@ import { create } from 'zustand';
 import { Agent } from './agentStore';
 
 export interface Listing {
-  id:           string;
-  name:         string;
-  ownerId:      string;
-  strategyType: string;
-  hcsTopicId:   string;
-  serialNumber: number | null;
-  priceHbar:    number | null;
-  ipfsCID:      string | null;
-  createdAt:    string;
-  executions:   number;
-  recentSignals: Array<{ signal: string; confidence: number }>;
-  winRate:      number;
-  hashscanUrl:  string;
+  id:              string;
+  name:            string;
+  ownerId:         string;
+  strategyType:    string;
+  hcsTopicId:      string;
+  serialNumber:    number | null;
+  priceHbar:       number | null;
+  ipfsCID:         string | null;
+  createdAt:       string;
+  executions:      number;
+  recentSignals:   Array<{ signal: string; confidence: number }>;
+  winRate:         number;
+  hashscanUrl:     string;
+  // Performance stats returned by the enhanced marketplace API
+  profitFactor:    number | null;
+  sharpeRatio:     number | null;
+  avgWin:          number | null;
+  avgLoss:         number | null;
+  equitySparkline: number[] | null;
 }
 
 type SortKey = 'winRate' | 'priceHbar' | 'executions' | 'createdAt';

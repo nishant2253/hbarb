@@ -32,7 +32,7 @@ function CopyButton({ text }: { text: string }) {
 }
 
 export default function WalletPage() {
-  const { accountId, hbarBalance, isConnected, setWallet, setBalance } = useWalletStore();
+  const { accountId, hbarBalance, isConnected, setWallet } = useWalletStore();
   const { agents, liveSignals, setAgents } = useAgentStore();
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
 

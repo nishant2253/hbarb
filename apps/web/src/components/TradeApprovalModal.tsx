@@ -135,8 +135,8 @@ export function TradeApprovalModal({
       const fnParams   = new ContractFunctionParameters()
         .addString(agentId)
         .addString(direction)
-        .addUint256(amount.toString())
-        .addUint256(slippageMin.toString())
+        .addUint256(Number(amount))
+        .addUint256(Number(slippageMin))
         .addString(hcsSequenceNum)
         .addString(hcsTopicId);
 
