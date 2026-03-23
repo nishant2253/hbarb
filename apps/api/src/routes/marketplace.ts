@@ -302,14 +302,15 @@ router.post('/post-purchase', async (req: Request, res: Response) => {
     //     completes the exchange on the NFT side.
     if (tokenId && serialNumber) {
       try {
-        const nftTransferTx = await new TransferTransaction()
+        const frozenNftTx = await new TransferTransaction()
           .addNftTransfer(
             new NftId(TokenId.fromString(tokenId), serialNumber),
             AccountId.fromString(operatorAcctId),
             AccountId.fromString(buyerAccountId),
           )
-          .freezeWith(client)
-          .sign(operatorKey);
+          .setMaxTransactionFee(new Hbar(2))
+          .freezeWith(client);
+        const nftTransferTx = await frozenNftTx.sign(operatorKey);
         const nftTxResponse = await nftTransferTx.execute(client);
         await nftTxResponse.getReceipt(client);
         console.log(`[Marketplace] NFT #${serialNumber} transferred from operator to ${buyerAccountId}`);

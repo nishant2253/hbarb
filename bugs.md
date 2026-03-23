@@ -164,6 +164,21 @@ All three usages of `listing.recentSignals` (reduce, `.length > 0`, `.slice`) we
 2. **Backend call** — operator mints NFT and transfers to the now-associated wallet
 If the wallet is already associated, the `TOKEN_ALREADY_ASSOCIATED` error is silently caught and the flow continues to the backend call.
 
+### 25. post-purchase Fails — Missing freezeWith on NFT Transfer and createAgentTopic
+
+**Symptom:** `POST /api/marketplace/post-purchase` errors:
+1. `[Marketplace] NFT transfer failed: transaction must have been frozen before calculating the hash will be stable, try calling freeze` — `marketplace.ts:312`
+2. `[Marketplace] post-purchase error: transaction must have been frozen ... TopicCreateTransaction` — `hcs.ts:63`
+Frontend shows: `Error: Backend post-purchase failed`
+
+**Root Cause (two layers):**
+1. `marketplace.ts`: `.freezeWith(client).sign(operatorKey)` was chained in one expression. `freezeWith` returns a `Promise<Transaction>` — `.sign()` was called on the Promise, not the resolved transaction, so the transaction was never frozen before `.execute()`.
+2. `hcs.ts` `createAgentTopic`: `TopicCreateTransaction.execute(client)` was called without prior `freezeWith(client)`. The Hedera SDK requires explicit `freezeWith` for `TopicCreateTransaction` (same root cause as Bug #19 for `TopicMessageSubmitTransaction`).
+
+**Resolution:**
+- `marketplace.ts`: Split into two awaited steps — `const frozenNftTx = await ...freezeWith(client)` then `const nftTransferTx = await frozenNftTx.sign(operatorKey)`.
+- `hcs.ts` `createAgentTopic`: Added `await ...freezeWith(client)` as a separate step before `.execute(client)`.
+
 ---
 
 ### 24. Four TypeScript Compilation Errors After Trading Platform Upgrade
