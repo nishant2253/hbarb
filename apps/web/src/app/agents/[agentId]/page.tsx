@@ -203,22 +203,34 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
     }
     setListingStatus('loading');
     try {
-      // ── Step 1: Associate strategy NFT token with the owner's wallet ──
-      // HashPack will show a popup so the user explicitly approves the association.
-      // This is required before the operator can transfer the minted NFT to this account.
+      // ── Step 1: Associate strategy NFT token (only if not already associated) ──
+      // Pre-check Mirror Node to avoid sending the transaction to HashPack when it
+      // would fail with TOKEN_ALREADY_ASSOCIATED (HashPack shows its own error dialog
+      // even if our catch block would suppress it, causing confusing UX).
       const strategyTokenId = TokenId.fromString(STRATEGY_TOKEN_ID);
       const ownerAcctId     = AccountId.fromString(accountId);
+      const mnBase = `https://${NETWORK}.mirrornode.hedera.com/api/v1`;
+      let alreadyAssociated = false;
       try {
-        const assocTx = await new TokenAssociateTransaction()
-          .setAccountId(ownerAcctId)
-          .setTokenIds([strategyTokenId])
-          .setMaxTransactionFee(new Hbar(2))
-          .freezeWithSigner(signer);
-        const assocResp = await assocTx.executeWithSigner(signer);
-        await assocResp.getReceiptWithSigner(signer);
-      } catch (assocErr: any) {
-        if (!assocErr?.message?.includes('TOKEN_ALREADY_ASSOCIATED')) {
-          throw assocErr;
+        const checkRes  = await fetch(`${mnBase}/accounts/${accountId}/tokens?token.id=${STRATEGY_TOKEN_ID}`);
+        const checkData = await checkRes.json() as any;
+        alreadyAssociated = (checkData?.tokens?.length ?? 0) > 0;
+      } catch { /* proceed — we'll catch the association error below if needed */ }
+
+      if (!alreadyAssociated) {
+        try {
+          const assocTx = await new TokenAssociateTransaction()
+            .setAccountId(ownerAcctId)
+            .setTokenIds([strategyTokenId])
+            .setMaxTransactionFee(new Hbar(2))
+            .freezeWithSigner(signer);
+          const assocResp = await assocTx.executeWithSigner(signer);
+          await assocResp.getReceiptWithSigner(signer);
+        } catch (assocErr: any) {
+          if (!assocErr?.message?.includes('TOKEN_ALREADY_ASSOCIATED') &&
+              !assocErr?.status?.toString().includes('TOKEN_ALREADY_ASSOCIATED')) {
+            throw assocErr;
+          }
         }
       }
 
