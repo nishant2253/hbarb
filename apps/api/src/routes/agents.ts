@@ -469,31 +469,27 @@ router.post('/:agentId/log-execution-result', async (req: Request, res: Response
     // ── Log execution result to HCS ──────────────────────────────────
     const { submitAgentDecision, createHederaClient } = await import('@tradeagent/hedera');
     const client = createHederaClient();
-    try {
-      await submitAgentDecision(client, hcsTopicId, {
-        signal:     'EXECUTION_RESULT' as any,
-        agentId,
-        price,
-        confidence: 100,
-        reasoning: [
-          `Manual swap approved by wallet owner.`,
-          `Direction: ${direction}.`,
-          `Amount in: ${amountIn}.`,
-          `Amount out: ${amountOut}.`,
-          `Slippage: ${(slippageBps / 100).toFixed(2)}%.`,
-          `TxHash: ${txHash}.`,
-          `Based on HCS decision #${hcsSequenceNum}.`,
-        ].join(' '),
-        indicators: {
-          amountIn:    Number(amountIn),
-          amountOut:   Number(amountOut),
-          slippageBps: slippageBps,
-        },
-        timestamp: new Date().toISOString(),
-      });
-    } finally {
-      client.close();
-    }
+    await submitAgentDecision(client, hcsTopicId, {
+      signal:     'EXECUTION_RESULT' as any,
+      agentId,
+      price,
+      confidence: 100,
+      reasoning: [
+        `Manual swap approved by wallet owner.`,
+        `Direction: ${direction}.`,
+        `Amount in: ${amountIn}.`,
+        `Amount out: ${amountOut}.`,
+        `Slippage: ${(slippageBps / 100).toFixed(2)}%.`,
+        `TxHash: ${txHash}.`,
+        `Based on HCS decision #${hcsSequenceNum}.`,
+      ].join(' '),
+      indicators: {
+        amountIn:    Number(amountIn),
+        amountOut:   Number(amountOut),
+        slippageBps: slippageBps,
+      },
+      timestamp: new Date().toISOString(),
+    });
 
     // ── Update the matching DB Execution row ──────────────────────────
     await prisma.execution.updateMany({

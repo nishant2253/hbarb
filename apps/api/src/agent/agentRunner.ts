@@ -371,8 +371,6 @@ export async function runAgentCycle(
   console.log(`[AgentRunner] Swap Executed: ${!!tradeResult}`);
   console.log(`[AgentRunner] ═══════════════════════════════════\n`);
 
-  client.close();
-
   return { 
     decision, 
     hcsResult:    { ...hcsResult, topicId: hcsTopicId }, 
