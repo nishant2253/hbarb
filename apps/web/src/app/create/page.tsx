@@ -157,7 +157,9 @@ function FundAgentModal({ agentId, agentAccountId, signer, accountId, onComplete
         .setMaxTransactionFee(new Hbar(2))
         .freezeWithSigner(signer);
       const response = await transferTx.executeWithSigner(signer);
-      await response.getReceiptWithSigner(signer);
+      // getReceiptWithSigner hangs indefinitely with DAppSigner on TransferTransaction (Bug #5).
+      // The executeWithSigner return itself confirms acceptance; wait for Hedera finality instead.
+      await new Promise(r => setTimeout(r, 3000));
       const txIdStr = response.transactionId.toString();
       setTxId(txIdStr);
       await fetch(`${API_URL}/api/agents/${agentId}/fund`, {
@@ -469,7 +471,8 @@ export default function CreatePage() {
         .setContractId(contractId).setGas(800000).setFunction('registerAgent', contractParams)
         .setMaxTransactionFee(new Hbar(5)).freezeWithSigner(signer);
       const contractResp = await contractTx.executeWithSigner(signer);
-      await contractResp.getReceiptWithSigner(signer);
+      // No receipt data needed — delay for finality instead of getReceiptWithSigner (Bug #5)
+      await new Promise(r => setTimeout(r, 3000));
       const contractTxHash = contractResp.transactionId.toString();
       recordTx({ ownerId: accountId, agentId, type: 'DEPLOY_HSCS', txId: contractTxHash, details: { strategyType: deployConfig.strategyType } });
 

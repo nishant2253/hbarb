@@ -22,9 +22,10 @@ This document tracks bugs encountered during the TradeAgent development lifecycl
 **Symptom:** `Link` is not defined.
 **Resolution:** Re-added the `import Link from 'next/link'`.
 
-### 5. SDK Bug: Query.fromBytes() Recursion
-**Symptom:** `Query.fromBytes() not implemented for type getByKey`.
-**Resolution:** Bypassed `getReceiptWithSigner` for certain steps using propagation delay and direct Mirror Node check in `src/lib/tokenAssociation.ts`.
+### 5. SDK Bug: Query.fromBytes() Recursion / getReceiptWithSigner Hangs Indefinitely
+**Symptom:** `Query.fromBytes() not implemented for type getByKey`. Also manifests as infinite "Funding..." spinner on Step 4 (Fund Your Agent) — `TransferTransaction.getReceiptWithSigner(signer)` never resolves with `DAppSigner`.
+**Root Cause:** `getReceiptWithSigner` from `@hashgraph/hedera-wallet-connect` `DAppSigner` hangs when called on transactions that return no usable receipt data (`TransferTransaction`, `ContractExecuteTransaction`). The transaction itself succeeds — only the receipt poll hangs.
+**Resolution:** Replaced `await response.getReceiptWithSigner(signer)` with `await new Promise(r => setTimeout(r, 3000))` for all cases where the receipt value is not used (FundAgentModal line ~160, deploy TX3 ContractExecuteTransaction line ~474 in `create/page.tsx`). Steps that need actual receipt data (TX1 `fileId`, TX2 `topicId`) keep `getReceiptWithSigner` as they work correctly for those transaction types.
 
 ### 6. Ethers.js v6 Custom Signer Incompatibility
 **Symptom:** `TypeError: Cannot read properties of undefined (reading 'then')` when routing HSCS calls through the HashPack ethers bridge.
