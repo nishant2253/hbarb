@@ -36,60 +36,75 @@ const ListSchema = z.object({
 
 // ── GET /api/marketplace ──────────────────────────────────────────
 /**
- * Returns all listed agents with live performance stats from Mirror Node.
+ * Returns all listed agents with live performance stats (win rate, profit
+ * factor, Sharpe, avg win/loss) computed from DB executions plus recent
+ * HCS signals. Includes equity sparkline for marketplace card display.
  */
 router.get('/', async (_req: Request, res: Response) => {
   try {
     const listed = await prisma.agent.findMany({
-      where: { listed: true, active: true },
-      orderBy: { createdAt: 'desc' },
-      select: {
-        id:           true,
-        name:         true,
-        ownerId:      true,
-        strategyType: true,
-        hcsTopicId:   true,
-        serialNumber: true,
-        priceHbar:    true,
-        ipfsCID:      true,
-        createdAt:    true,
-        _count: { select: { executions: true } },
-      },
+      where:    { listed: true, active: true },
+      orderBy:  { createdAt: 'desc' },
+      include:  { executions: { orderBy: { createdAt: 'asc' } } },
     });
 
-    // Enrich each listing with recent HCS performance (last 10 signals)
-    const enriched = await Promise.all(listed.map(async (agent: typeof listed[number]) => {
+    const enriched = await Promise.all(listed.map(async (agent) => {
+      // ── Recent HCS signals (for display) ────────────────────────
       let recentSignals: Array<{ signal: string; confidence: number }> = [];
-      let winRate = 0;
-
       try {
-        const url = `${MIRROR_BASE}/api/v1/topics/${agent.hcsTopicId}/messages?limit=10&order=desc`;
-        const resp = await fetch(url);
+        const url  = `${MIRROR_BASE}/api/v1/topics/${agent.hcsTopicId}/messages?limit=20&order=desc`;
+        const resp = await fetch(url, { signal: AbortSignal.timeout(3000) });
         if (resp.ok) {
-          const data = await resp.json() as {
-            messages: Array<{ message: string }>;
-          };
+          const data = await resp.json() as { messages: Array<{ message: string }> };
           recentSignals = data.messages
             .map(m => {
-              try {
-                return JSON.parse(Buffer.from(m.message, 'base64').toString()) as { signal: string; confidence: number };
-              } catch { return null; }
+              try { return JSON.parse(Buffer.from(m.message, 'base64').toString()) as { signal: string; confidence: number }; }
+              catch { return null; }
             })
             .filter(Boolean) as Array<{ signal: string; confidence: number }>;
-
-          const actionable = recentSignals.filter(s => s.signal !== 'HOLD');
-          winRate = actionable.length > 0
-            ? Math.round(actionable.filter(s => s.confidence > 70).length / actionable.length * 100)
-            : 0;
         }
       } catch { /* non-fatal */ }
 
+      // ── Performance stats from DB executions ────────────────────
+      const execPnLs = agent.executions
+        .filter(e => e.fillPrice != null && e.price != null)
+        .map(e => ({
+          pnlPct: e.signal === 'BUY'
+            ? ((e.fillPrice! - e.price) / e.price) * 100
+            : ((e.price - e.fillPrice!) / e.price) * 100,
+        }));
+
+      const { calculateWinRate } = await import('../agent/riskManager');
+      const stats = calculateWinRate(execPnLs);
+
+      // ── Equity sparkline (last 10 points for mini-chart) ────────
+      let equity = 100;
+      const equitySparkline: { equity: number }[] = [{ equity: 100 }];
+      for (const t of execPnLs.slice(-10)) {
+        equity = equity * (1 + t.pnlPct / 100);
+        equitySparkline.push({ equity: Math.round(equity * 100) / 100 });
+      }
+
       return {
-        ...agent,
-        executions:   agent._count.executions,
+        id:            agent.id,
+        name:          agent.name,
+        ownerId:       agent.ownerId,
+        strategyType:  agent.strategyType,
+        hcsTopicId:    agent.hcsTopicId,
+        serialNumber:  agent.serialNumber,
+        priceHbar:     agent.priceHbar,
+        ipfsCID:       agent.ipfsCID,
+        createdAt:     agent.createdAt,
+        executions:    agent.executions.length,
         recentSignals: recentSignals.slice(0, 5),
-        winRate,
-        hashscanUrl: `https://hashscan.io/${process.env.HEDERA_NETWORK || 'testnet'}/topic/${agent.hcsTopicId}`,
+        // Performance stats
+        winRate:       parseFloat(stats.winRate.toFixed(1)),
+        profitFactor:  parseFloat(stats.profitFactor.toFixed(2)),
+        sharpeRatio:   parseFloat(stats.sharpeRatio.toFixed(2)),
+        avgWin:        parseFloat(stats.avgWin.toFixed(2)),
+        avgLoss:       parseFloat(stats.avgLoss.toFixed(2)),
+        equitySparkline,
+        hashscanUrl:   `https://hashscan.io/${process.env.HEDERA_NETWORK || 'testnet'}/topic/${agent.hcsTopicId}`,
       };
     }));
 
@@ -105,9 +120,9 @@ router.get('/', async (_req: Request, res: Response) => {
       listings:   enriched,
       total:      enriched.length,
       collection: {
-        tokenId:    process.env.STRATEGY_TOKEN_ID,
+        tokenId:     process.env.STRATEGY_TOKEN_ID,
         totalMinted: collectionStats.totalMinted,
-        royaltyPct: 5,      // Protocol-enforced on Hedera
+        royaltyPct:  5,
         royaltyNote: 'Royalties enforced at Hedera protocol level — cannot be bypassed',
       },
     });
@@ -129,6 +144,21 @@ router.post('/list', async (req: Request, res: Response) => {
     const agent = await prisma.agent.findUnique({ where: { id: agentId } });
     if (!agent) return res.status(404).json({ error: 'Agent not found' });
     if (agent.listed) return res.status(400).json({ error: 'Agent already listed' });
+
+    // ── Require minimum 7 HCS decisions (verified track record) ───
+    try {
+      const mirrorUrl  = `${MIRROR_BASE}/api/v1/topics/${agent.hcsTopicId}/messages?limit=7&order=asc`;
+      const mirrorResp = await fetch(mirrorUrl, { signal: AbortSignal.timeout(5000) });
+      if (mirrorResp.ok) {
+        const mirrorData = await mirrorResp.json() as { messages: unknown[] };
+        const msgCount   = mirrorData.messages?.length ?? 0;
+        if (msgCount < 7) {
+          return res.status(400).json({
+            error: `Minimum 7 HCS decisions required before listing. Agent has ${msgCount}. Run more trade cycles to build a track record.`,
+          });
+        }
+      }
+    } catch { /* Mirror Node unavailable — allow listing to proceed */ }
 
     const tokenId = process.env.STRATEGY_TOKEN_ID;
     if (!tokenId) {

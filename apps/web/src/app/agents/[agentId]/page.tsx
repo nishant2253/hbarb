@@ -7,7 +7,7 @@ import {
   ArrowLeftIcon, ExternalLinkIcon, PlayIcon, PauseIcon,
   ShieldCheckIcon, FileTextIcon, ActivityIcon, ClockIcon, ZapIcon,
   ArrowRightLeftIcon, CheckCircle2Icon, WalletIcon, TrendingUpIcon, ArrowDownToLineIcon,
-  StoreIcon, TagIcon, Loader2,
+  StoreIcon, TagIcon, Loader2, BarChart2Icon,
 } from 'lucide-react';
 
 import { TradeApprovalModal } from '@/components/TradeApprovalModal';
@@ -340,6 +340,16 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
       >
         <ArrowLeftIcon size={14} />
         Back to Wallet
+      </Link>
+
+      {/* Analytics Dashboard link */}
+      <Link
+        href={`/dashboard/${agentId}`}
+        className="inline-flex items-center gap-2 text-sm mb-6 px-3 py-1.5 rounded-lg border transition-colors duration-200 hover:bg-[#00A9BA]/10"
+        style={{ color: '#00A9BA', borderColor: 'rgba(0,169,186,0.3)' }}
+      >
+        <BarChart2Icon size={14} />
+        View Analytics Dashboard
       </Link>
 
       {/* ── Agent Header ─────────────────────────────────────────── */}

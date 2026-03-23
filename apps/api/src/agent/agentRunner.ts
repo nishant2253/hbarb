@@ -1,22 +1,20 @@
 /**
- * agentRunner.ts — LangGraph ReAct agent cycle
+ * agentRunner.ts — AI + Algorithmic trading agent cycle
  *
- * The core AI trading loop for TradeAgent:
+ * The core trading loop for TradeAgent:
  *
- *   ┌─────────────────────────────────────────────────────┐
- *   │  1. Fetch price from Pyth oracle (via Agent Kit)    │
- *   │  2. AI decision: BUY / SELL / HOLD (Gemini Flash)   │
- *   │  3. HCS write ← ALWAYS before trade execution ⚠️   │
- *   │  4. SaucerSwap execution (if BUY or SELL)           │
- *   └─────────────────────────────────────────────────────┘
+ *   ┌─────────────────────────────────────────────────────────────┐
+ *   │  1. Fetch price from Pyth oracle (via Agent Kit)            │
+ *   │  2a. Compute full indicator set (EMA/RSI/MACD/Bollinger/ATR)│
+ *   │  2b. Run deterministic strategy → signal + confidence       │
+ *   │  2c. Gemini enriches reasoning text (not the signal)        │
+ *   │  3. HCS write ← ALWAYS before trade execution ⚠️           │
+ *   │  4. Execute swap via MockDEX / SaucerSwap                   │
+ *   └─────────────────────────────────────────────────────────────┘
  *
  * THE CRITICAL INVARIANT:
- *   HCS message MUST be submitted BEFORE any SaucerSwap call.
+ *   HCS message MUST be submitted BEFORE any swap call.
  *   The aBFT consensus timestamp proves the decision came first.
- *   This is what makes TradeAgent verifiable — not just auditable.
- *
- * Uses LangGraph's createReactAgent() for the tool-calling loop.
- * The LLM uses SaucerSwap + Pyth tools declared in hederaKit.ts.
  */
 
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
@@ -28,6 +26,10 @@ import { submitAgentDecision, getOperatorKey, createHederaClient } from '@tradea
 import { createAgentKit, getPythPrice } from './hederaKit';
 import { executeTradeSignal } from './tradeExecutor';
 import type { AgentConfig } from './promptBuilder';
+import { calculateAllIndicators, pricesToOHLCV } from './indicators';
+import { runStrategy } from './strategies';
+import { calculatePositionSize as kellyPositionSize, DEFAULT_RISK_CONFIG } from './riskManager';
+import prisma from '../db/prisma';
 
 // ── SaucerSwap Price ──────────────────────────────────────────────
 
@@ -104,7 +106,7 @@ export interface TradingDecision {
   indicators: Record<string, number>;
 }
 
-// ── Technical indicator helpers ───────────────────────────────────
+// ── Price history helpers ─────────────────────────────────────────
 
 const ASSET_SYMBOL_MAP: Record<string, string> = {
   'HBAR/USDC': 'HBARUSDT',
@@ -123,40 +125,26 @@ function assetToSymbol(asset: string): string {
     ?? 'HBARUSDT';
 }
 
-async function fetchPriceHistory(asset: string, limit: number): Promise<number[]> {
+/** Fetch OHLCV candles from Binance klines endpoint */
+async function fetchOHLCV(asset: string, limit: number): Promise<Array<{open:number;high:number;low:number;close:number;volume:number;timestamp:number}>> {
   const symbol  = assetToSymbol(asset);
   const url     = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1h&limit=${limit}`;
   const res     = await fetch(url);
   if (!res.ok) throw new Error(`Binance API ${res.status}`);
   const candles = await res.json() as unknown[][];
-  return candles.map(c => parseFloat(String(c[4]))); // close prices
+  return candles.map(c => ({
+    timestamp: Number(c[0]),
+    open:      parseFloat(String(c[1])),
+    high:      parseFloat(String(c[2])),
+    low:       parseFloat(String(c[3])),
+    close:     parseFloat(String(c[4])),
+    volume:    parseFloat(String(c[5])),
+  }));
 }
 
-/** Exponential Moving Average — seeds with SMA for the first `period` bars */
-function computeEMA(prices: number[], period: number): number {
-  if (prices.length < period) return prices[prices.length - 1];
-  const k   = 2 / (period + 1);
-  let   ema = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  for (let i = period; i < prices.length; i++) {
-    ema = prices[i] * k + ema * (1 - k);
-  }
-  return ema;
-}
-
-/** Relative Strength Index (Wilder's smoothing) */
-function computeRSI(prices: number[], period = 14): number {
-  if (prices.length < period + 1) return 50;
-  const recent = prices.slice(-(period + 1));
-  let gains = 0, losses = 0;
-  for (let i = 1; i < recent.length; i++) {
-    const Δ = recent[i] - recent[i - 1];
-    if (Δ > 0) gains  += Δ;
-    else        losses += Math.abs(Δ);
-  }
-  const avgGain = gains  / period;
-  const avgLoss = losses / period;
-  if (avgLoss === 0) return 100;
-  return parseFloat((100 - 100 / (1 + avgGain / avgLoss)).toFixed(2));
+async function fetchPriceHistory(asset: string, limit: number): Promise<number[]> {
+  const candles = await fetchOHLCV(asset, limit);
+  return candles.map(c => c.close);
 }
 
 // ── runAgentCycle ─────────────────────────────────────────────────
@@ -256,97 +244,96 @@ export async function runAgentCycle(
     await syncMockDexReserves(price);
   }
 
-    // ── Step 2b: Compute technical indicators from price history ────
+  // ── Step 2b: Compute full indicator set ─────────────────────────
   console.log('[AgentRunner] Step 2b: Computing technical indicators...');
-  let computedIndicators: Record<string, number> = { price };
-  try {
-    const neededBars = Math.max(
-      (agentConfig.indicators?.movingAverage?.period ?? 0) + 10,
-      (agentConfig.indicators?.rsi?.period ?? 14) + 10,
-      80
-    );
-    const priceHistory = await fetchPriceHistory(agentConfig.asset, neededBars);
-    const allPrices = [...priceHistory, price];
+  const fastPeriod = agentConfig.indicators?.movingAverage?.period ?? 20;
+  const slowPeriod = Math.max(fastPeriod * 3, 60);
+  const rsiPeriod  = agentConfig.indicators?.rsi?.period ?? 14;
+  // Need at least slow+MACD(26+9)+buffer candles
+  const neededBars = Math.max(slowPeriod + 40, 80);
 
-    if (agentConfig.indicators?.movingAverage) {
-      const { type, period } = agentConfig.indicators.movingAverage;
-      const val = computeEMA(allPrices, period);
-      computedIndicators[`${type}_${period}`] = parseFloat(val.toFixed(6));
-      computedIndicators['price_vs_ma_pct'] = parseFloat(((price / val - 1) * 100).toFixed(3));
-    }
-    if (agentConfig.indicators?.rsi) {
-      const { period, overbought, oversold } = agentConfig.indicators.rsi;
-      computedIndicators[`RSI_${period}`] = computeRSI(allPrices, period);
-      computedIndicators['rsi_overbought'] = overbought;
-      computedIndicators['rsi_oversold']   = oversold;
-    }
-    if (agentConfig.indicators?.macd) {
-      const { fast, slow } = agentConfig.indicators.macd;
-      const emaFast = computeEMA(allPrices, fast);
-      const emaSlow = computeEMA(allPrices, slow);
-      computedIndicators['MACD_line'] = parseFloat((emaFast - emaSlow).toFixed(6));
-    }
-    console.log('[AgentRunner] Indicators:', JSON.stringify(computedIndicators));
+  let indicatorResult: ReturnType<typeof calculateAllIndicators> | null = null;
+  let computedIndicators: Record<string, number> = { price };
+
+  try {
+    const ohlcv = await fetchOHLCV(agentConfig.asset, neededBars);
+    // Append current price as a synthetic candle to include the live tick
+    const syntheticCandle = {
+      open: price, high: price, low: price, close: price,
+      volume: ohlcv[ohlcv.length - 1]?.volume ?? 1,
+      timestamp: Date.now(),
+    };
+    const allOHLCV = [...ohlcv, syntheticCandle];
+
+    indicatorResult = calculateAllIndicators(allOHLCV, {
+      fastEMA:   fastPeriod,
+      slowEMA:   slowPeriod,
+      rsiPeriod,
+    });
+
+    computedIndicators = {
+      price,
+      fastEMA:        parseFloat(indicatorResult.ema.fast.toFixed(6)),
+      slowEMA:        parseFloat(indicatorResult.ema.slow.toFixed(6)),
+      [`RSI_${rsiPeriod}`]: parseFloat(indicatorResult.rsi.value.toFixed(2)),
+      MACD_line:      parseFloat(indicatorResult.macd.macdLine.toFixed(6)),
+      MACD_histogram: parseFloat(indicatorResult.macd.histogram.toFixed(6)),
+      boll_upper:     parseFloat(indicatorResult.bollinger.upper.toFixed(6)),
+      boll_lower:     parseFloat(indicatorResult.bollinger.lower.toFixed(6)),
+      ATR:            parseFloat(indicatorResult.atr.value.toFixed(6)),
+      compositeScore: indicatorResult.compositeScore,
+    };
+    console.log(`[AgentRunner] Indicators: EMA(${indicatorResult.ema.signal}) RSI=${indicatorResult.rsi.value.toFixed(1)} MACD(${indicatorResult.macd.signal}) Score=${indicatorResult.compositeScore}`);
   } catch (err) {
     console.warn('[AgentRunner] Indicator computation failed — using price only:', (err as Error).message);
   }
 
-  // ── Step 3: Gemini AI decision ────────────────────────────────
-  console.log('[AgentRunner] Step 3: Generating AI trading decision...');
+  // ── Step 2c: Run deterministic strategy → signal + confidence ───
+  console.log('[AgentRunner] Step 2c: Running strategy...');
+  const riskConfig = {
+    stopLossPct:   agentConfig.risk?.stopLossPct   ?? DEFAULT_RISK_CONFIG.stopLossPct,
+    takeProfitPct: agentConfig.risk?.takeProfitPct ?? DEFAULT_RISK_CONFIG.takeProfitPct,
+  };
 
-  // Build an indicator summary string for readability in the prompt
-  const indicatorSummaryLines = Object.entries(computedIndicators)
-    .filter(([k]) => k !== 'price')
-    .map(([k, v]) => `  ${k}: ${v}`)
-    .join('\n');
+  let strategyOutput = { signal: 'HOLD' as 'BUY'|'SELL'|'HOLD', confidence: 50, reasoning: 'Indicator data unavailable.' };
+  if (indicatorResult) {
+    const out = runStrategy(agentConfig.strategyType, indicatorResult, price, riskConfig);
+    strategyOutput = { signal: out.signal, confidence: out.confidence, reasoning: out.reasoning };
+    console.log(`[AgentRunner] Strategy output: ${out.signal} (${out.confidence}%) — ${out.reasoning}`);
+  }
 
-  const decisionPrompt = `You are a systematic algorithmic trading agent. Make a decisive BUY, SELL, or HOLD decision.
+  // ── Step 3: Gemini enriches the reasoning (signal already decided) ──
+  console.log('[AgentRunner] Step 3: Gemini enriching reasoning...');
+  let reasoning = strategyOutput.reasoning;
+  try {
+    const genAI        = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+    const reasonModel  = genAI.getGenerativeModel({
+      model:            GEMINI_MODEL,
+      generationConfig: { temperature: 0.3 },
+    });
+    const enrichPrompt =
+      `You are a quantitative trading analyst. The algorithmic strategy produced this trade signal:\n` +
+      `Signal: ${strategyOutput.signal} | Confidence: ${strategyOutput.confidence}%\n` +
+      `Strategy reasoning: ${strategyOutput.reasoning}\n` +
+      `Asset: ${agentConfig.asset} | Price: $${price} | Strategy: ${agentConfig.strategyType}\n` +
+      `Indicators: compositeScore=${computedIndicators.compositeScore}, ` +
+      `RSI=${computedIndicators[`RSI_${rsiPeriod}`]}, ` +
+      `EMA_fast=${computedIndicators.fastEMA}, EMA_slow=${computedIndicators.slowEMA}\n\n` +
+      `Write ONE concise sentence (max 120 chars) explaining the trade rationale, citing actual indicator values. ` +
+      `Do NOT change the signal. Plain text only, no JSON.`;
+    const enrichRaw = await reasonModel.generateContent(enrichPrompt);
+    const enriched  = enrichRaw.response.text().trim().replace(/\n+/g, ' ').slice(0, 200);
+    if (enriched.length > 20) reasoning = enriched;
+  } catch (err) {
+    console.warn('[AgentRunner] Gemini reasoning enrichment failed:', (err as Error).message?.slice(0, 60));
+  }
 
-Strategy: ${agentConfig.strategyType}
-Asset: ${agentConfig.asset}
-Timeframe: ${agentConfig.timeframe}
-Current Price: $${price}
-
-COMPUTED INDICATOR VALUES (use these for your decision):
-${indicatorSummaryLines || '  (only spot price available)'}
-
-Risk config: stop-loss ${agentConfig.risk.stopLossPct}%, take-profit ${agentConfig.risk.takeProfitPct}%, max position ${agentConfig.risk.maxPositionSizePct}%
-
-Decision rules for ${agentConfig.strategyType}:
-- TREND_FOLLOW: BUY when price > MA and RSI not overbought; SELL when price < MA and RSI not oversold
-- MEAN_REVERT: BUY when RSI < oversold level; SELL when RSI > overbought level
-- BREAKOUT: BUY when price_vs_ma_pct > 1%; SELL when price_vs_ma_pct < -1%
-- MOMENTUM: BUY when RSI > 55 and rising; SELL when RSI < 45 and falling
-
-Apply the rules above with the actual computed values. Do NOT return HOLD just because an indicator value is unexpected — make the most informed decision you can from the data provided.
-
-Return ONLY valid JSON:
-{
-  "signal": "BUY" | "SELL" | "HOLD",
-  "confidence": <number 0-100>,
-  "reasoning": "<one sentence citing the actual indicator values>",
-  "indicators": ${JSON.stringify(computedIndicators)}
-}`;
-
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-  const decisionModel = genAI.getGenerativeModel({
-    model: GEMINI_MODEL,
-    generationConfig: { responseMimeType: 'application/json', temperature: 0.1 },
-  });
-
-  const decisionRaw = await decisionModel.generateContent(decisionPrompt);
-  const decisionText = decisionRaw.response.text().trim()
-    .replace(/^```(?:json)?\n?/i, '')
-    .replace(/\n?```$/i, '');
-
-  const rawDecision = JSON.parse(decisionText);
   const decision: TradingDecision = {
-    signal:     rawDecision.signal     as 'BUY' | 'SELL' | 'HOLD',
-    confidence: rawDecision.confidence as number,
-    reasoning:  rawDecision.reasoning  as string,
+    signal:     strategyOutput.signal,
+    confidence: strategyOutput.confidence,
+    reasoning,
     price,
-    // Prefer Gemini's returned indicators but merge with our computed ones so they're always present
-    indicators: { ...computedIndicators, ...(rawDecision.indicators as Record<string, number> ?? {}) },
+    indicators: computedIndicators,
   };
 
   console.log(`[AgentRunner] Decision: ${decision.signal} (confidence: ${decision.confidence}%) — ${decision.reasoning}`);
@@ -355,8 +342,10 @@ Return ONLY valid JSON:
   console.log(`\n[AgentRunner] Step 4: Routing to tradeExecutor...`);
   
   const amountTinybars = await calculatePositionSize(
-    agentConfig.risk.maxPositionSizePct || 5, // fallback 5%
-    price
+    agentConfig.risk?.maxPositionSizePct ?? 5,
+    price,
+    agentConfig.agentId,
+    decision.confidence,
   );
 
   const { hcsResult, tradeResult, mode } = await executeTradeSignal({
@@ -393,21 +382,46 @@ Return ONLY valid JSON:
   };
 }
 
-// Calculate how many tinybars to trade based on position size %
+// Calculate how many tinybars to trade using Kelly Criterion sizing.
+// Uses historical win rate from DB executions for the specific agent.
 async function calculatePositionSize(
   maxPositionPct: number,
-  priceUSD: number
+  priceUSD:       number,
+  agentId?:       string,
+  confidence      = 60,
 ): Promise<bigint> {
   const accountId = process.env.OPERATOR_ACCOUNT_ID!;
   if (!accountId) return 0n;
-  
-  const res = await fetch(`https://testnet.mirrornode.hedera.com/api/v1/accounts/${accountId}`);
+
+  const res  = await fetch(`https://testnet.mirrornode.hedera.com/api/v1/accounts/${accountId}`);
   const data = (await res.json()) as any;
   const balanceTinybars = BigInt(data.balance?.balance ?? 0);
-  
-  // maxPositionPct % of balance, capped at 20%
-  const pct = Math.min(maxPositionPct, 20);
-  return (balanceTinybars * BigInt(pct)) / 100n;
+
+  // Fetch historical win rate from DB for this agent
+  let historicalWinRate = 0.50;
+  if (agentId) {
+    try {
+      const execs = await prisma.execution.findMany({
+        where:  { agentId, signal: { in: ['BUY', 'SELL'] } },
+        select: { fillPrice: true, signal: true },
+        orderBy: { createdAt: 'desc' },
+        take:   50,
+      });
+      if (execs.length >= 5) {
+        // Simple proxy: assume win if fill price exists (actual P&L requires exit price)
+        const withFill = execs.filter(e => e.fillPrice != null).length;
+        historicalWinRate = withFill / execs.length;
+      }
+    } catch { /* ignore — use default */ }
+  }
+
+  return kellyPositionSize(
+    balanceTinybars,
+    confidence,
+    { maxPositionSizePct: Math.min(maxPositionPct, 20) },
+    historicalWinRate,
+    2.0, // default R:R ratio
+  );
 }
 
 // ── extractPrice (utility used by agentRunner internally) ─────────

@@ -5,6 +5,7 @@ import { loadEnv } from './config/env';
 import agentsRouter from './routes/agents';
 import marketplaceRouter from './routes/marketplace';
 import transactionsRouter from './routes/transactions';
+import leaderboardRouter from './routes/leaderboard';
 
 // Load and validate environment variables first
 loadEnv();
@@ -36,6 +37,37 @@ app.get('/health', (_req, res) => {
 app.use('/api/agents',       agentsRouter);
 app.use('/api/marketplace',  marketplaceRouter);
 app.use('/api/transactions', transactionsRouter);
+app.use('/api/leaderboard',  leaderboardRouter);
+
+// ── Analytics ─────────────────────────────────────────────────────
+// GET /api/analytics/:agentId/performance
+app.get('/api/analytics/:agentId/performance', async (req, res) => {
+  try {
+    const { getAgentPerformance } = await import('./analytics/performance');
+    const perf = await getAgentPerformance(req.params.agentId);
+    res.json(perf);
+  } catch (err: any) {
+    const status = err.message === 'Agent not found' ? 404 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// ── Backtesting ────────────────────────────────────────────────────
+// POST /api/backtest  { strategyType, risk, asset, days }
+app.post('/api/backtest', async (req, res) => {
+  try {
+    const { strategyType, risk, asset = 'HBAR/USDC', days = 90 } = req.body;
+    if (!strategyType || !risk) {
+      return res.status(400).json({ error: 'strategyType and risk are required' });
+    }
+    const { fetchHistoricalOHLCV, runBacktest } = await import('./backtesting/backtester');
+    const ohlcv  = await fetchHistoricalOHLCV(asset, days);
+    const result = await runBacktest({ strategyType, risk, asset }, ohlcv);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ── Root ─────────────────────────────────────────────────────────
 app.get('/', (_req, res) => {
@@ -59,6 +91,9 @@ app.get('/', (_req, res) => {
       delistNFT:        'DELETE /api/marketplace/:id',
       logTransaction:   'POST /api/transactions',
       getTransactions:  'GET  /api/transactions?ownerId=X',
+      leaderboard:      'GET  /api/leaderboard?sortBy=winRate&limit=20',
+      analytics:        'GET  /api/analytics/:agentId/performance',
+      backtest:         'POST /api/backtest',
     },
   });
 });

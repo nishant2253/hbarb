@@ -6,8 +6,11 @@ import { useMarketplaceStore } from '@/stores/marketplaceStore';
 import Link from 'next/link';
 import {
   TrendingUpIcon, UsersIcon, BarChart2Icon, ExternalLinkIcon,
-  SearchIcon, SlidersIcon, ZapIcon,
+  SearchIcon, SlidersIcon, ZapIcon, ShieldCheckIcon,
 } from 'lucide-react';
+import {
+  AreaChart, Area, ResponsiveContainer,
+} from 'recharts';
 
 const API_URL  = process.env.NEXT_PUBLIC_API_URL || '';
 const NETWORK  = process.env.NEXT_PUBLIC_HEDERA_NETWORK || 'testnet';
@@ -161,68 +164,84 @@ export default function MarketplacePage() {
               variants={{ hidden: { opacity: 0, y: 12 }, show: { opacity: 1, y: 0, transition: { duration: 0.3 } } }}
             >
               <Link href={`/marketplace/${agent.id}`} className="block cursor-pointer">
-                <div
-                  className="glass-card p-4 flex items-center gap-4 transition-all duration-200 hover:border-[#00A9BA]/40"
-                >
-                  {/* Avatar */}
-                  <AgentAvatar name={agent.name} />
-
-                  {/* Details */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-start justify-between mb-1">
-                      <h3 className="font-semibold text-sm truncate pr-2" style={{ color: '#E2E8F0' }}>
+        <div className="glass-card p-4 transition-all duration-200 hover:border-[#00A9BA]/40">
+                  {/* Card Header */}
+                  <div className="flex items-center gap-3 mb-4">
+                    <AgentAvatar name={agent.name} />
+                    <div className="flex-1 min-w-0">
+                      <h3 className="font-semibold text-sm truncate" style={{ color: '#E2E8F0' }}>
                         {agent.name}
                       </h3>
-                      <span
-                        className="text-xs px-2 py-0.5 rounded-full flex-shrink-0"
-                        style={{
-                          background: 'rgba(0,169,186,0.1)',
-                          color: '#00A9BA',
-                          border: '1px solid rgba(0,169,186,0.2)',
-                        }}
-                      >
-                        {agent.strategyType.replace('_',' ')}
-                      </span>
+                      <p className="text-[10px] mt-0.5" style={{ color: '#475569' }}>
+                        {agent.strategyType.replace('_', ' ')}
+                      </p>
                     </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-sm font-bold" style={{ color: '#00A9BA' }}>
+                        {agent.priceHbar ? `${agent.priceHbar} ℏ` : '—'}
+                      </p>
+                      <p className="text-[10px] text-gray-500">
+                        ≈ ${((agent.priceHbar ?? 0) * 0.08).toFixed(2)}
+                      </p>
+                    </div>
+                  </div>
 
-                    {/* Stats row — mirrors Walbi layout */}
-                    <div className="grid grid-cols-3 gap-2 mt-2">
-                      <div>
-                        <p className="text-[10px] mb-0.5" style={{ color: '#334155' }}>Turnover</p>
-                        <p className="text-sm font-bold" style={{ color: '#E2E8F0' }}>
-                          {agent.priceHbar ? `${agent.priceHbar} ℏ` : '—'}
-                        </p>
+                  {/* 6 Performance Stats */}
+                  <div className="grid grid-cols-3 gap-2 mb-3">
+                    {[
+                      { label: 'Win Rate',     value: agent.winRate != null ? `${Number(agent.winRate).toFixed(1)}%` : '—',     color: (agent.winRate ?? 0) > 50 ? '#22C55E' : '#F59E0B' },
+                      { label: 'Profit Factor',value: agent.profitFactor != null ? Number(agent.profitFactor).toFixed(2) : '—', color: (agent.profitFactor ?? 0) > 1.5 ? '#22C55E' : '#F59E0B' },
+                      { label: 'Sharpe',       value: agent.sharpeRatio != null ? Number(agent.sharpeRatio).toFixed(2) : '—',   color: (agent.sharpeRatio ?? 0) > 1 ? '#22C55E' : '#F59E0B' },
+                      { label: 'Trades',       value: agent.executions ?? 0,                                                     color: '#00A9BA' },
+                      { label: 'Avg Win',      value: agent.avgWin != null ? `+${Number(agent.avgWin).toFixed(1)}%` : '—',       color: '#22C55E' },
+                      { label: 'Avg Loss',     value: agent.avgLoss != null ? `-${Number(agent.avgLoss).toFixed(1)}%` : '—',     color: '#EF4444' },
+                    ].map(s => (
+                      <div key={s.label} className="bg-[#0A1628] rounded-lg p-2 text-center">
+                        <p className="text-[9px] text-gray-600 mb-0.5">{s.label}</p>
+                        <p className="text-xs font-bold font-mono" style={{ color: s.color }}>{s.value}</p>
                       </div>
-                      <div>
-                        <p className="text-[10px] mb-0.5" style={{ color: '#334155' }}>Executions</p>
-                        <p className="text-sm font-bold" style={{ color: '#E2E8F0' }}>{agent.executions}</p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] mb-0.5" style={{ color: '#334155' }}>Win Rate</p>
-                        <p
-                          className="text-sm font-bold"
-                          style={{ color: agent.winRate > 60 ? '#10B981' : agent.winRate > 40 ? '#EAB308' : '#EF4444' }}
-                        >
-                          {agent.winRate}%
-                        </p>
-                      </div>
-                    </div>
+                    ))}
+                  </div>
 
-                    {/* Footer */}
-                    <div className="flex items-center justify-between mt-3">
-                      <span className="badge-hcs">Verified on HCS</span>
-                      <a
-                        href={agent.hashscanUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={e => e.stopPropagation()}
-                        className="flex items-center gap-1 text-xs cursor-pointer transition-colors duration-200 hover:text-white"
-                        style={{ color: '#334155' }}
-                      >
-                        HashScan
-                        <ExternalLinkIcon size={11} />
-                      </a>
+                  {/* Mini equity sparkline */}
+                  {Array.isArray((agent as any).equitySparkline) && (agent as any).equitySparkline.length > 1 && (
+                    <div className="h-12 mb-3">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={(agent as any).equitySparkline}>
+                          <defs>
+                            <linearGradient id={`spk-${agent.id}`} x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%"  stopColor="#00A9BA" stopOpacity={0.3} />
+                              <stop offset="95%" stopColor="#00A9BA" stopOpacity={0} />
+                            </linearGradient>
+                          </defs>
+                          <Area
+                            type="monotone" dataKey="equity"
+                            stroke="#00A9BA" strokeWidth={1.5}
+                            fill={`url(#spk-${agent.id})`}
+                            dot={false}
+                          />
+                        </AreaChart>
+                      </ResponsiveContainer>
                     </div>
+                  )}
+
+                  {/* Footer */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1 text-[10px]" style={{ color: '#00A9BA' }}>
+                      <ShieldCheckIcon size={10} />
+                      <span>{agent.executions} HCS decisions</span>
+                    </div>
+                    <a
+                      href={agent.hashscanUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={e => e.stopPropagation()}
+                      className="flex items-center gap-1 text-[10px] hover:text-white transition-colors"
+                      style={{ color: '#334155' }}
+                    >
+                      HashScan
+                      <ExternalLinkIcon size={9} />
+                    </a>
                   </div>
                 </div>
               </Link>
