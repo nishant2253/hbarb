@@ -1,8 +1,6 @@
 /**
  * routes/agents.ts — Core agent API routes
  *
- * POST /api/agents/build   — Gemini parses user prompt → AgentConfig + hash
- * POST /api/agents/deploy  — 5-step Hedera deployment (HCS + HFS + HSCS + HCS-10 + BullMQ)
  * GET  /api/agents         — List all agents for an owner
  * GET  /api/agents/:id     — Get single agent details
  * GET  /api/agents/:id/history — Mirror Node HCS history (tamper-proof source of truth)
@@ -13,14 +11,9 @@
 
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
-import { v4 as uuidv4 } from 'uuid';
-import { ethers } from 'ethers';
 import prisma from '../db/prisma';
-import { AgentConfigSchema } from '../agent/promptBuilder';
-import { buildAgentFromPrompt } from '../agent/promptBuilder';
 import { runAgentCycle } from '../agent/agentRunner';
 import {
-  AccountCreateTransaction,
   TokenAssociateTransaction,
   TransferTransaction,
   AccountId,
@@ -30,36 +23,12 @@ import {
 } from '@hashgraph/sdk';
 import {
   createHederaClient,
-  getOperatorKey,
-  getOperatorAccountId,
-  createAgentTopic,
-  storeAgentConfig,
-  registerAgentHCS10,
 } from '@tradeagent/hedera';
-import { computeConfigHash } from '../agent/promptBuilder';
 import { agentQueue, scheduleAgentJob } from '../agent/agentWorker';
 
 const router = Router();
 
-// ── AgentRegistry ABI (only the functions we call) ───────────────
-const REGISTRY_ABI = [
-  'function registerAgent(string agentId, bytes32 configHash, string hcsTopicId, string hfsConfigId, string strategyType) external',
-  'function logExecution(string agentId, string signal, uint256 price) external',
-  'function getTotalAgents() external view returns (uint256)',
-];
-
 // ── Zod request schemas ───────────────────────────────────────────
-const BuildPromptSchema = z.object({
-  prompt: z.string().min(10).max(1000),
-});
-
-const DeploySchema = z.object({
-  config:        AgentConfigSchema,
-  configHash:    z.string().regex(/^0x[0-9a-fA-F]{64}$/, 'Must be a keccak256 hex hash'),
-  walletAddress: z.string().min(5),   // Hedera account ID (0.0.XXXXX)
-  dryRun:        z.boolean().optional().default(false),
-});
-
 const RunSchema = z.object({
   dryRun: z.boolean().optional().default(true),
 });
@@ -68,170 +37,6 @@ const RunSchema = z.object({
 const MIRROR_BASE = process.env.MIRROR_NODE_URL ||
   'https://testnet.mirrornode.hedera.com';
 
-// ── POST /api/agents/build ────────────────────────────────────────
-/**
- * Build an AgentConfig from a plain English prompt via Gemini.
- * Returns config + configHash for client to review before deploying.
- *
- * Does NOT deploy anything — just builds the config.
- */
-router.post('/build', async (req: Request, res: Response) => {
-  try {
-    const { prompt } = BuildPromptSchema.parse(req.body);
-    const { config, configJson, configHash } = await buildAgentFromPrompt(prompt);
-
-    res.json({
-      config,
-      configJson,
-      configHash,
-      message: 'Review config, then POST to /api/agents/deploy',
-    });
-  } catch (err: unknown) {
-    const msg = err instanceof z.ZodError
-      ? err.errors.map(e => e.message).join(', ')
-      : (err as Error).message;
-    res.status(400).json({ error: msg });
-  }
-});
-
-// ── POST /api/agents/deploy ───────────────────────────────────────
-/**
- * 5-Step Hedera Deployment:
- *   1. Create HCS topic (per-agent audit trail)
- *   2. Store full config in HFS (on-chain verifiable)
- *   3. Register on AgentRegistry smart contract (HSCS)
- *   4. Register with HCS-10 OpenConvAI (inter-agent discovery)
- *   5. Save to Supabase via Prisma + schedule in BullMQ
- */
-router.post('/deploy', async (req: Request, res: Response) => {
-  try {
-    const { config, configHash, walletAddress, dryRun } = DeploySchema.parse(req.body);
-
-    const agentId    = uuidv4();
-    const client     = createHederaClient();
-    const operatorKey = getOperatorKey();
-    const operatorId  = getOperatorAccountId().toString();
-    const network     = process.env.HEDERA_NETWORK || 'testnet';
-
-    console.log(`\n[Deploy] Starting 5-step deployment for agent: ${config.name}`);
-    console.log(`[Deploy] Owner: ${walletAddress} | DryRun: ${dryRun}`);
-
-    // ── Step 1: Create HCS topic ──────────────────────────────────
-    console.log('[Deploy] Step 1: Creating HCS audit topic...');
-    const hcsTopicId = await createAgentTopic(client, agentId, operatorKey);
-    console.log(`[Deploy] ✅ HCS topic: ${hcsTopicId}`);
-
-    // ── Step 2: Store config in HFS ───────────────────────────────
-    console.log('[Deploy] Step 2: Storing config in HFS...');
-    const hfsConfigId = await storeAgentConfig(
-      client,
-      { ...config, agentId, createdAt: new Date().toISOString(), version: '1.0' },
-      operatorKey
-    );
-    console.log(`[Deploy] ✅ HFS config: ${hfsConfigId}`);
-
-    // ── Step 3: Register on HSCS (AgentRegistry contract) ────────
-    let contractTxId: string | undefined;
-    const registryAddress = process.env.AGENT_REGISTRY_EVM_ADDRESS;
-
-    if (registryAddress && !dryRun) {
-      console.log('[Deploy] Step 3: Registering on AgentRegistry smart contract...');
-      try {
-        const provider = new ethers.JsonRpcProvider(
-          `https://${network}.hashio.io/api`
-        );
-        const wallet  = new ethers.Wallet(
-          process.env.OPERATOR_PRIVATE_KEY_HEX || process.env.OPERATOR_PRIVATE_KEY!,
-          provider
-        );
-        const registry = new ethers.Contract(registryAddress, REGISTRY_ABI, wallet);
-        const tx = await registry.registerAgent(
-          agentId, configHash, hcsTopicId, hfsConfigId, config.strategyType
-        );
-        await tx.wait();
-        contractTxId = tx.hash;
-        console.log(`[Deploy] ✅ Contract txId: ${contractTxId}`);
-      } catch (err) {
-        // Non-fatal: HSCS registration failure doesn't block deployment
-        console.warn('[Deploy] ⚠️  HSCS registration failed (non-fatal):', (err as Error).message);
-      }
-    } else {
-      console.log('[Deploy] Step 3: Skipping HSCS registration (dry-run or no registry address)');
-    }
-
-    // ── Step 4: Register with HCS-10 OpenConvAI ──────────────────
-    console.log('[Deploy] Step 4: Registering on HCS-10 OpenConvAI...');
-    let hcs10TopicId: string | undefined;
-    try {
-      const hcs10Result = await registerAgentHCS10({
-        name:         config.name,
-        description:  `${config.strategyType} strategy for ${config.asset}`,
-        strategyType: config.strategyType,
-        accountId:    operatorId,
-        privateKey:   process.env.OPERATOR_PRIVATE_KEY!,
-      });
-      hcs10TopicId = hcs10Result.inboundTopicId;
-      console.log(`[Deploy] ✅ HCS-10 inbound topic: ${hcs10TopicId}`);
-    } catch (err) {
-      // Non-fatal
-      console.warn('[Deploy] ⚠️  HCS-10 registration failed (non-fatal):', (err as Error).message);
-    }
-
-    // ── Step 5: Save to DB + schedule BullMQ ─────────────────────
-    console.log('[Deploy] Step 5: Saving to Supabase + scheduling BullMQ...');
-    const agent = await prisma.agent.create({
-      data: {
-        id:            agentId,
-        name:          config.name,
-        ownerId:       walletAddress,
-        config:        config as object,
-        configHash,
-        strategyType:  config.strategyType,
-        hcsTopicId,
-        hfsConfigId,
-        contractTxId,
-        hcs10TopicId,
-        active:        true,
-      },
-    });
-
-    // Schedule BullMQ cron job
-    if (!dryRun) {
-      await scheduleAgentJob(
-        { ...config, agentId },
-        hcsTopicId,
-        false
-      );
-      console.log(`[Deploy] ✅ BullMQ scheduled for ${config.timeframe} timeframe`);
-    }
-
-    client.close();
-
-    console.log(`[Deploy] 🎉 Deployment complete! Agent ${agentId} is live.\n`);
-
-    res.status(201).json({
-      agentId,
-      name:          agent.name,
-      hcsTopicId,
-      hfsConfigId,
-      hcs10TopicId,
-      contractTxId,
-      strategyType:  config.strategyType,
-      scheduled:     !dryRun,
-      links: {
-        topic:    `https://hashscan.io/${network}/topic/${hcsTopicId}`,
-        file:     `https://hashscan.io/${network}/file/${hfsConfigId}`,
-        contract: contractTxId ? `https://hashscan.io/${network}/transaction/${contractTxId}` : null,
-      },
-    });
-  } catch (err: unknown) {
-    console.error('[Deploy] Error:', err);
-    const msg = err instanceof z.ZodError
-      ? err.errors.map(e => e.message).join(', ')
-      : (err as Error).message;
-    res.status(400).json({ error: msg });
-  }
-});
 
 // ── GET /api/agents ───────────────────────────────────────────────
 /**
@@ -575,155 +380,6 @@ router.post("/:agentId/trigger", async (req, res) => {
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
-  }
-});
-
-// ── POST /api/agents/finalize-deploy ─────────────────────────────
-/**
- * Called by the frontend AFTER the user has signed HFS, HCS, and HSCS
- * transactions via HashPack. This endpoint handles the backend-only steps:
- *   4. HCS-10 OpenConvAI registration (operator pays, silent)
- *   5. Save agent to Supabase via Prisma
- *   6. Schedule BullMQ cron job
- *
- * The user-signed transactions (HFS/HCS/HSCS) are already on-chain
- * before this endpoint is called.
- */
-router.post('/finalize-deploy', async (req: Request, res: Response) => {
-  try {
-    const {
-      agentId,
-      config,
-      configHash,
-      hcsTopicId,
-      hfsFileId,
-      contractTxHash,
-      ownerAccountId,
-    } = req.body;
-
-    if (!agentId || !config || !hcsTopicId || !ownerAccountId) {
-      return res.status(400).json({ error: 'Missing required fields: agentId, config, hcsTopicId, ownerAccountId' });
-    }
-
-    const operatorId = getOperatorAccountId().toString();
-    const network    = process.env.HEDERA_NETWORK || 'testnet';
-
-    console.log(`\n[finalize-deploy] Finalizing agent: ${agentId}`);
-    console.log(`[finalize-deploy] Owner: ${ownerAccountId} | HCS: ${hcsTopicId}`);
-
-    // ── Step 4: Create dedicated agent trading account ────────────
-    // Each agent gets its own ECDSA Hedera account so it can trade
-    // autonomously in AUTO mode without requiring a per-trade user signature.
-    const client = createHederaClient();
-    let agentAccountId: string | null    = null;
-    let agentAccountEvmAddress: string | null = null;
-    let agentAccountPrivateKey: string | null = null;
-
-    try {
-      console.log('[finalize-deploy] Creating agent trading account...');
-      const agentKey = HederaPrivateKey.generateECDSA();
-      const agentAccountTx = await new AccountCreateTransaction()
-        .setKeyWithoutAlias(agentKey.publicKey)
-        .setInitialBalance(new HederaHbar(0.1)) // seed from operator for gas
-        .setAccountMemo(`TradeAgent:${agentId}`)
-        .execute(client);
-      const agentAccountReceipt = await agentAccountTx.getReceipt(client);
-      agentAccountId         = agentAccountReceipt.accountId!.toString();
-      agentAccountEvmAddress = `0x${agentKey.publicKey.toEvmAddress()}`;
-      agentAccountPrivateKey = agentKey.toStringRaw(); // 32-byte hex ECDSA key
-
-      console.log(`[finalize-deploy] ✅ Agent account created: ${agentAccountId} (${agentAccountEvmAddress})`);
-
-      // Associate tUSDT token with agent account so MockDEX can send tUSDT to it
-      const tUSDTTokenIdStr = process.env.TEST_USDT_TOKEN_ID;
-      if (tUSDTTokenIdStr) {
-        try {
-          const assocTx = await new TokenAssociateTransaction()
-            .setAccountId(AccountId.fromString(agentAccountId))
-            .setTokenIds([TokenId.fromString(tUSDTTokenIdStr)])
-            .freezeWith(client)
-            .sign(agentKey);
-          await assocTx.execute(client);
-          console.log(`[finalize-deploy] ✅ tUSDT associated with agent account`);
-        } catch (assocErr) {
-          console.warn('[finalize-deploy] ⚠️  tUSDT association failed (non-fatal):', (assocErr as Error).message);
-        }
-      }
-    } catch (accountErr) {
-      console.warn('[finalize-deploy] ⚠️  Agent account creation failed (non-fatal):', (accountErr as Error).message);
-    }
-
-    // ── Step 5: Save to Supabase + schedule BullMQ (instant) ─────
-    const resolvedConfigHash = configHash || computeConfigHash(config);
-
-    const agent = await prisma.agent.create({
-      data: {
-        id:                    agentId,
-        name:                  config.name,
-        ownerId:               ownerAccountId,
-        config:                config as object,
-        configHash:            resolvedConfigHash,
-        strategyType:          config.strategyType,
-        hcsTopicId,
-        hfsConfigId:           hfsFileId,
-        contractTxId:          contractTxHash,
-        hcs10TopicId:          null, // will be patched in background
-        agentAccountId,
-        agentAccountEvmAddress,
-        agentAccountPrivateKey,
-        active:                true,
-      },
-    });
-
-    // ── Step 6: Schedule BullMQ cron job ─────────────────────────
-    await scheduleAgentJob({ ...config, agentId }, hcsTopicId, false);
-    console.log(`[finalize-deploy] ✅ DB saved + BullMQ scheduled | Agent ${agentId} is live.`);
-
-    // ── Step 7: HCS-10 OpenConvAI registration — fire-and-forget ─
-    setImmediate(() => {
-      registerAgentHCS10({
-        name:         config.name,
-        description:  `${config.strategyType} strategy for ${config.asset}`,
-        strategyType: config.strategyType,
-        accountId:    operatorId,
-        privateKey:   process.env.OPERATOR_PRIVATE_KEY!,
-      })
-        .then(async (hcs10Result) => {
-          const hcs10TopicId = hcs10Result.inboundTopicId;
-          console.log(`[finalize-deploy] ✅ HCS-10 registered (background): ${hcs10TopicId}`);
-          await prisma.agent.update({
-            where: { id: agentId },
-            data:  { hcs10TopicId },
-          }).catch((e: Error) => console.warn('[finalize-deploy] HCS-10 patch failed:', e.message));
-        })
-        .catch((err: Error) => {
-          console.warn('[finalize-deploy] ⚠️  HCS-10 registration failed (non-fatal):', err.message);
-        });
-    });
-
-    res.status(201).json({
-      agentId,
-      name:                  agent.name,
-      hcsTopicId,
-      hfsConfigId:           hfsFileId,
-      hcs10TopicId:          null,
-      contractTxHash,
-      agentAccountId,        // returned so frontend can show "Fund Agent" step
-      agentAccountEvmAddress,
-      scheduled:             true,
-      links: {
-        agent:    `/agents/${agentId}`,
-        topic:    `https://hashscan.io/${network}/topic/${hcsTopicId}`,
-        file:     hfsFileId ? `https://hashscan.io/${network}/file/${hfsFileId}` : null,
-        contract: contractTxHash ? `https://hashscan.io/${network}/transaction/${contractTxHash}` : null,
-      },
-    });
-  } catch (err: unknown) {
-    console.error('[finalize-deploy] Error:', err);
-    const msg = err instanceof z.ZodError
-      ? err.errors.map(e => e.message).join(', ')
-      : (err as Error).message;
-    res.status(500).json({ error: msg });
   }
 });
 

@@ -4,15 +4,14 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState, useEffect } from 'react';
 import { useWalletStore } from '@/stores/walletStore';
-import { BotIcon, WalletIcon, StoreIcon, WrenchIcon, LayoutDashboardIcon, MenuIcon, XIcon } from 'lucide-react';
+import { BotIcon, WalletIcon, StoreIcon, LayoutDashboardIcon, MenuIcon, XIcon } from 'lucide-react';
 import { WalletConnectButton } from './WalletConnect';
 
 const NAV_LINKS = [
   { href: '/',            label: 'Dashboard',  icon: LayoutDashboardIcon },
   { href: '/wallet',      label: 'Wallet',     icon: WalletIcon },
-  { href: '/create',      label: 'Create',     icon: BotIcon },
+  { href: '/agents',      label: 'Agents',     icon: BotIcon },
   { href: '/marketplace', label: 'Marketplace',icon: StoreIcon },
-  { href: '/builder',     label: 'Builder',    icon: WrenchIcon },
 ];
 
 export function Navigation() {

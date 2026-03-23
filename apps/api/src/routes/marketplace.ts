@@ -235,8 +235,11 @@ router.get('/:agentId', async (req: Request, res: Response) => {
     }
 
     const network = process.env.HEDERA_NETWORK || 'testnet';
+    const { executions, ...agentRest } = agent;
     res.json({
-      ...agent,
+      ...agentRest,
+      // Return a count, not the raw Prisma array — the frontend expects a number
+      executions: executions.length,
       royaltyPct: 5,
       links: {
         nft:   agent.serialNumber

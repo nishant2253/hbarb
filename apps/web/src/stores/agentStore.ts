@@ -28,48 +28,23 @@ export interface Signal {
   agentName:   string;
 }
 
-export interface AgentConfig {
-  agentId?:     string;
-  name:         string;
-  asset:        string;
-  strategyType: string;
-  timeframe:    string;
-  riskLevel?:   string;
-  indicators?: {
-    movingAverage?: { type: string; period: number };
-    rsi?:           { period: number; overbought: number; oversold: number };
-    macd?:          { fast: number; slow: number; signal: number };
-    bollingerBands?:{ period: number; stdDev: number };
-  };
-  risk?: {
-    stopLossPct:        number;
-    takeProfitPct:      number;
-    maxPositionSizePct: number;
-  };
-  [key: string]: unknown;
-}
-
 interface AgentState {
-  agents:         Agent[];
-  activeAgent:    Agent | null;
-  liveSignals:    Signal[];
-  buildingConfig: AgentConfig | null;
-  isLoading:      boolean;
+  agents:      Agent[];
+  activeAgent: Agent | null;
+  liveSignals: Signal[];
+  isLoading:   boolean;
 
-  // Actions
-  setAgents:          (agents: Agent[]) => void;
-  setActiveAgent:     (agent: Agent | null) => void;
-  addSignal:          (signal: Signal) => void;
-  setBuildingConfig:  (config: AgentConfig | null) => void;
-  setLoading:         (loading: boolean) => void;
+  setAgents:      (agents: Agent[]) => void;
+  setActiveAgent: (agent: Agent | null) => void;
+  addSignal:      (signal: Signal) => void;
+  setLoading:     (loading: boolean) => void;
 }
 
 export const useAgentStore = create<AgentState>()((set) => ({
-  agents:         [],
-  activeAgent:    null,
-  liveSignals:    [],
-  buildingConfig: null,
-  isLoading:      false,
+  agents:      [],
+  activeAgent: null,
+  liveSignals: [],
+  isLoading:   false,
 
   setAgents: (agents) => set({ agents }),
 
@@ -79,8 +54,6 @@ export const useAgentStore = create<AgentState>()((set) => ({
     set((state) => ({
       liveSignals: [signal, ...state.liveSignals].slice(0, 50),
     })),
-
-  setBuildingConfig: (buildingConfig) => set({ buildingConfig }),
 
   setLoading: (isLoading) => set({ isLoading }),
 }));

@@ -140,11 +140,11 @@ export default function WalletPage() {
             My Agents
           </h2>
           <Link
-            href="/create"
+            href="/agents"
             className="text-xs font-semibold px-3 py-1.5 rounded-lg cursor-pointer transition-all duration-200"
             style={{ background: 'rgba(0,169,186,0.1)', color: '#00A9BA', border: '1px solid rgba(0,169,186,0.25)' }}
           >
-            + Deploy New
+            View Agents
           </Link>
         </div>
 
@@ -152,9 +152,7 @@ export default function WalletPage() {
           <div className="py-12 text-center">
             <BotIcon size={32} className="mx-auto mb-3" style={{ color: '#1C2333' }} />
             <p className="text-sm" style={{ color: '#334155' }}>No agents deployed yet.</p>
-            <Link href="/create" className="text-xs mt-2 block cursor-pointer" style={{ color: '#00A9BA' }}>
-              Create your first agent →
-            </Link>
+            <p className="text-xs mt-2" style={{ color: '#475569' }}>Contact the operator to deploy a new agent.</p>
           </div>
         ) : (
           <div className="overflow-x-auto">

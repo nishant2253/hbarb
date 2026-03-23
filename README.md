@@ -2,12 +2,11 @@
 
 > **Hedera APEX Hackathon 2026 · Track 1: AI & Agents**
 
-TradeAgent is a decentralized AI trading agent platform. Users create, deploy, and monetize autonomous trading agents whose every decision is permanently recorded on Hedera with aBFT-guaranteed timestamps.
+TradeAgent is a decentralized AI trading agent platform. Autonomous trading agents run on Hedera, with every decision permanently recorded with aBFT-guaranteed timestamps.
 
 Each agent:
-- Is described in plain English → Gemini 2.5 Flash generates a structured `AgentConfig`
 - Gets a dedicated Hedera ECDSA account to trade autonomously — no per-trade signing required
-- Runs a **deterministic indicator pipeline** (EMA, RSI, MACD, Bollinger, ATR) that drives the trade signal; Gemini only enriches the reasoning text
+- Runs a **deterministic indicator pipeline** (EMA, RSI, MACD, Bollinger, ATR) that drives the trade signal; Gemini enriches the reasoning text
 - Logs every AI decision to HCS *before* any swap executes (tamper-proof audit trail)
 - Is registered as an NFT on HTS and listed in the on-chain marketplace with provable on-chain performance stats
 
@@ -99,19 +98,12 @@ hbarb/                               # npm workspaces root
 │   ├── web/                         # Next.js 15 frontend
 │   │   └── src/
 │   │       ├── app/                 # App Router pages
-│   │       │   ├── create/          # AI agent builder
 │   │       │   ├── agents/[id]/     # Agent dashboard
 │   │       │   ├── marketplace/     # Browse & buy agents
 │   │       │   └── wallet/          # Portfolio + TX audit log
 │   │       ├── components/          # Shared UI components
 │   │       ├── lib/                 # wallet.ts, balance.ts, hashpackEthers.ts
-│   │       ├── stores/              # Zustand stores (walletStore, marketplaceStore)
-│   │       └── app/
-│   │           ├── create/          # AI agent builder
-│   │           ├── agents/[id]/     # Agent detail + list-as-NFT
-│   │           ├── dashboard/[id]/  # Analytics terminal (equity curve, HCS feed)
-│   │           ├── marketplace/     # Browse + buy agents (6-stat cards + sparklines)
-│   │           └── wallet/          # Portfolio + TX audit log
+│   │       └── stores/              # Zustand stores (walletStore, agentStore, marketplaceStore)
 │   └── api/                         # Node.js + Express API (port 3001)
 │       ├── src/
 │       │   ├── index.ts             # Server entry, route registration
@@ -160,7 +152,6 @@ hbarb/                               # npm workspaces root
 
 | Action | Who Signs | Who Pays |
 |--------|-----------|----------|
-| Deploy agent (HFS + HCS + HSCS) | User (3× HashPack) | User HBAR |
 | Fund agent account | User (1× HashPack) | User HBAR |
 | AUTO trade execution | Agent account key | Agent HBAR |
 | MANUAL trade execution | User (1× HashPack per trade) | User HBAR |
@@ -197,8 +188,7 @@ The trade signal is deterministic and verifiable; Gemini only explains it.
 
 | Feature | Status |
 |---------|--------|
-| AI agent builder (Gemini 2.5 Flash) | ✅ Complete |
-| 3-step HashPack deployment (HFS + HCS + HSCS) | ✅ Complete |
+| Agents deployed via operator (pre-configured) | ✅ Complete |
 | AgentRegistry smart contract | ✅ Complete |
 | Agent dedicated ECDSA account | ✅ Complete |
 | tUSDT auto-association per agent | ✅ Complete |

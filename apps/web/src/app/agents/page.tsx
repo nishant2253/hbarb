@@ -66,9 +66,7 @@ export default function AgentsDashboardPage() {
         ) : agents.length === 0 ? (
           <div className="p-4 text-center">
             <p className="text-xs" style={{ color: '#334155' }}>No agents yet.</p>
-            <Link href="/create" className="text-xs mt-2 block" style={{ color: '#00A9BA' }}>
-              Create one →
-            </Link>
+            <p className="text-xs mt-2" style={{ color: '#475569' }}>Contact the operator to deploy a new agent.</p>
           </div>
         ) : (
           <div className="p-2">

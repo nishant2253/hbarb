@@ -115,7 +115,7 @@ export default function HomePage() {
           className="flex flex-col sm:flex-row items-center gap-4"
         >
           <Link
-            href="/create"
+            href="/agents"
             className="flex items-center gap-2 px-6 py-3 rounded-xl font-semibold text-sm cursor-pointer transition-all duration-200"
             style={{
               background: 'linear-gradient(135deg, #00A9BA, #1565C0)',
@@ -123,7 +123,7 @@ export default function HomePage() {
               boxShadow: '0 0 24px rgba(0,169,186,0.35)',
             }}
           >
-            Create Your Agent
+            View My Agents
             <ArrowRightIcon size={16} />
           </Link>
           <Link

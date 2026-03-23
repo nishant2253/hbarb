@@ -14,52 +14,34 @@ This document tracks bugs encountered during the TradeAgent development lifecycl
 **Symptom:** Import error at build time.
 **Resolution:** Replaced with standard HTML buttons styled with Tailwind.
 
-### 3. Syntax Error: Duplicate Closing Tags
-**Symptom:** JSX parse error crashing the page.
-**Resolution:** Restored correct JSX structure in `CreatePage`.
-
-### 4. Missing Next.js Link Import
+### 3. Missing Next.js Link Import
 **Symptom:** `Link` is not defined.
 **Resolution:** Re-added the `import Link from 'next/link'`.
 
-### 5. SDK Bug: Query.fromBytes() Recursion
+### 4. SDK Bug: Query.fromBytes() Recursion
 **Symptom:** `Query.fromBytes() not implemented for type getByKey`.
 **Resolution:** Bypassed `getReceiptWithSigner` for certain steps using propagation delay and direct Mirror Node check in `src/lib/tokenAssociation.ts`.
 
-### 6. Ethers.js v6 Custom Signer Incompatibility
+### 5. Ethers.js v6 Custom Signer Incompatibility
 **Symptom:** `TypeError: Cannot read properties of undefined (reading 'then')` when routing HSCS calls through the HashPack ethers bridge.
 **Root Cause:** `DAppSigner` in `@hashgraph/hedera-wallet-connect` v1.x expects a Hedera SDK `Transaction` object — not a raw EVM transaction object from ethers.
 **Resolution:** Removed `hashpackEthers.ts` bridge entirely. Replaced with native `ContractExecuteTransaction` + `ContractFunctionParameters` from `@hashgraph/sdk`.
 
-### 7. Missing agentId During HSCS Registration
-**Symptom:** Deployment crashed with `invalid string value (argument="str", value=null)` from ethers during TX3.
-**Root Cause:** `config.agentId` was `undefined` because `/api/agents/build` did not include `agentId` in its response.
-**Resolution:** Generate `agentId` using `crypto.randomUUID()` at the very start of `deployAgent()` in `create/page.tsx` before any transactions.
-
-### 8. INSUFFICIENT_GAS on ContractExecuteTransaction
-**Symptom:** TX3 (Smart Contract Execute for `registerAgent()`) rejected with `INSUFFICIENT_GAS`.
-**Root Cause:** Initial gas limit of `300,000` too low for `AgentRegistry.sol`'s `registerAgent` function.
-**Resolution:** Increased `setGas(800_000)` and `setMaxTransactionFee(new Hbar(5))` in `create/page.tsx`.
-
-### 9. Missing `finalize-deploy` Endpoint
+### 6. Missing `finalize-deploy` Endpoint
 **Symptom:** Frontend completed all 3 HashPack transactions, then received 404.
 **Resolution:** Added the complete `finalize-deploy` handler including `prisma.agent.create()`, `scheduleAgentJob()`, and fire-and-forget HCS-10 registration.
 
-### 10. finalize-deploy Blocking for 60+ Seconds
+### 7. finalize-deploy Blocking for 60+ Seconds
 **Symptom:** Frontend spinner ran 60+ seconds after HashPack approvals.
 **Root Cause:** `registerAgentHCS10()` was awaited synchronously inside the HTTP handler.
 **Resolution:** Wrapped `registerAgentHCS10()` in `setImmediate()`. DB and BullMQ are saved first, `res.json()` fires immediately, HCS-10 runs in background.
 
-### 11. Wrong Redirect Path After Deployment
-**Symptom:** Redirect to `/dashboard/${agentId}` returned 404.
-**Resolution:** Updated to `router.push('/agents/${agentId}')`.
-
-### 12. Gemini Always Returns HOLD — No Trades Executing
+### 8. Gemini Always Returns HOLD — No Trades Executing
 **Symptom:** Every agent run returns HOLD with "EMA value not provided" reasoning.
 **Root Cause:** The decision prompt sent the indicator *config* (e.g. `{type:"EMA", period:60}`) but not actual computed values. Gemini could not make a BUY/SELL decision without real EMA/RSI numbers.
 **Resolution:** Added `fetchPriceHistory()` (80 Binance 1h candles), `computeEMA()`, and `computeRSI()` in `agentRunner.ts`. Gemini now receives computed values like `EMA_60: 0.08843`, `RSI_14: 52.3` and cites them in the reasoning.
 
-### 13. WalletConnect Double-Init / "No Signer for Account" After Reconnect
+### 9. WalletConnect Double-Init / "No Signer for Account" After Reconnect
 **Symptom:** After disconnecting and reconnecting, required 2 clicks. Console showed:
 - `Error: No signer for account`
 - `WalletConnect Core is already initialized`
@@ -72,7 +54,7 @@ This document tracks bugs encountered during the TradeAgent development lifecycl
 - `connectWallet()` calls `rehydrateWallet()` first before opening modal
 - `WalletConnect.tsx` `useEffect` calls `rehydrateWallet()` on mount; if it returns null, calls `disconnect()` to clear stale Zustand state
 
-### 14. MockDEX Direction Strings and Function Name Wrong in Both Frontend and Backend
+### 10. MockDEX Direction Strings and Function Name Wrong in Both Frontend and Backend
 **Symptom:** On-chain revert: `"Invalid direction: use HBAR_TO_USDC or USDC_TO_HBAR"` when triggering a manual trade via the `TradeApprovalModal`. Auto mode trades also silently failed.
 **Root Cause (two layers):**
 1. The deployed `MockDEX.sol` uses **one** function: `executeSwap(agentId, direction, amountIn, minAmountOut, hcsSeq, topicId)`. Both `TradeApprovalModal.tsx` and `tradeExecutor.ts` were calling non-existent `sellHBARforUSDT` / `buyHBARwithUSDT` functions left over from an earlier draft of the contract.
@@ -83,21 +65,12 @@ This document tracks bugs encountered during the TradeAgent development lifecycl
 - Direction strings corrected to `"HBAR_TO_USDC"` (SELL) and `"USDC_TO_HBAR"` (BUY) in both files.
 - `MOCK_DEX_ABI` simplified to the single `executeSwap` entry plus `getSwapQuote` and `SwapExecuted` event.
 
-### 15. TypeScript: `bigint` Not Assignable to `Hbar.fromTinybars` Parameter
+### 11. TypeScript: `bigint` Not Assignable to `Hbar.fromTinybars` Parameter
 **Symptom:** API server crashed with `TSError: TS2345: Argument of type 'bigint' is not assignable to parameter of type 'string | number | Long | BigNumber'` on the `/withdraw` endpoint.
 **Root Cause:** `Hbar.fromTinybars()` from `@hashgraph/sdk` does not accept native `bigint` — it expects `string`, `number`, `Long`, or `BigNumber`.
 **Resolution:** Convert `withdrawAmount` to string via `.toString()` before passing to `Hbar.fromTinybars()`. Use string prefix `"-"` for the debit side.
 
-### 16. 24 TypeScript Errors in `create/page.tsx` — `AgentConfig` Index Signature Widens All Properties to `{}`
-**Symptom:** 24 linter errors across `create/page.tsx`: `Property 'rsi' does not exist on type '{}'`, `Type '{}' is not assignable to type 'string'`, `Argument of type 'bigint' is not assignable to parameter of type 'string | number | BigNumber | Long'`.
-**Root Cause (two layers):**
-1. `AgentConfig` in `agentStore.ts` declared `[key: string]: unknown` but had no explicit `indicators`, `risk`, or `agentId` fields. In older TypeScript, `NonNullable<unknown>` resolves to `{}`. So `config.indicators ?? {}` gave `ind` the type `{}` (no known properties), and `config.agentId || crypto.randomUUID()` gave `agentId` the type `{}` (not `string`).
-2. `BigInt(Math.round(hbar * 1e8))` produced native `bigint`, which `Hbar.fromTinybars()` does not accept.
-**Resolution:**
-- Added explicit optional typed fields (`agentId?: string`, `indicators?: {...}`, `risk?: {...}`) to `AgentConfig` in `agentStore.ts`. All new types are subtypes of `unknown`, so the index signature remains valid.
-- Changed `BigInt(Math.round(...))` → `Math.round(...)` (plain `number`) in `FundAgentModal`.
-
-### 17. `transaction._makeTransactionBody is not a function` on Manual Trade Approval
+### 12. `transaction._makeTransactionBody is not a function` on Manual Trade Approval
 **Symptom:** Clicking "Approve Swap" in `TradeApprovalModal` threw `TypeError: transaction._makeTransactionBody is not a function` from inside `DAppSigner.signTransaction`, preventing the trade from executing.
 **Root Cause:** `TradeApprovalModal.tsx` used `getHashPackEthersSigner` (the `hashpackEthers.ts` bridge) to build an ethers signer, then called `mockDex.executeSwap()` through it. Ethers passes a raw EVM transaction object `{ to, data, gasLimit }` to `signer.sendTransaction()`, which forwarded it to `hederaSigner.signTransaction(tx)`. But `DAppSigner` from `@hashgraph/hedera-wallet-connect` internally calls `transactionToTransactionBody(tx)` which requires a Hedera SDK `Transaction` instance (one that has `_makeTransactionBody`). A plain EVM object has no such method.
 **Resolution:** Replaced the entire ethers write path with the native Hedera SDK pattern:
@@ -105,12 +78,12 @@ This document tracks bugs encountered during the TradeAgent development lifecycl
 - `executeSwap` (write): replaced with `ContractExecuteTransaction` + `ContractFunctionParameters` using `freezeWithSigner(signer).executeWithSigner(signer)` — identical to the deployment pattern.
 - Removed `getHashPackEthersSigner` import from `TradeApprovalModal.tsx` entirely.
 
-### 18. TypeScript `TS6059` — Monorepo Packages Outside `rootDir`
+### 13. TypeScript `TS6059` — Monorepo Packages Outside `rootDir`
 **Symptom:** Linter reported `File '.../packages/hedera/src/index.ts' is not under 'rootDir' '.../apps/api/src'` on every file that imported `@tradeagent/hedera` or `@tradeagent/shared` in the API.
 **Root Cause:** `apps/api/tsconfig.json` set `rootDir: "src"`, but `paths` mapped `@tradeagent/hedera` and `@tradeagent/shared` to files in `packages/*/src`, which is outside `apps/api/src`. When TypeScript resolved these aliases it included the package files in the compilation, violating the `rootDir` constraint.
 **Resolution:** Changed `rootDir: "src"` → `rootDir: "../.."` (workspace root) and added `packages/shared/src/**/*` and `packages/hedera/src/**/*` to the `include` array in `apps/api/tsconfig.json`. The `outDir: "dist"` still functions correctly; `ts-node` dev mode is unaffected.
 
-### 19. `TopicMessageSubmitTransaction` Always Requires `freezeWith(client)` — HCS Decisions Skipped
+### 14. `TopicMessageSubmitTransaction` Always Requires `freezeWith(client)` — HCS Decisions Skipped
 **Symptom:** Every `Run Trade` cycle prints `[HCS] ■ Decision logging failed — SKIPPING TRADE` with:
 ```
 Error: transaction must have been frozen before calculating the hash will be stable, try calling `freeze`
@@ -132,17 +105,17 @@ const response = await new TopicMessageSubmitTransaction()
   .execute(client);
 ```
 
-### 20. `createAgentTopic` Called with Missing `operatorKey` in `post-purchase` Route
+### 15. `createAgentTopic` Called with Missing `operatorKey` in `post-purchase` Route
 **Symptom:** `POST /api/marketplace/post-purchase` would throw a TypeScript/runtime error: `Expected 3 arguments, but got 2` when trying to clone an agent for a buyer.
 **Root Cause:** `marketplace.ts` called `createAgentTopic(client, newAgentId)` with only 2 arguments, but the function signature in `hcs.ts` is `createAgentTopic(client, agentId, operatorKey)`.
 **Resolution:** Added `const operatorKey = getOperatorKey()` and passed it as the third argument: `createAgentTopic(client, newAgentId, operatorKey)` in `marketplace.ts`.
 
-### 21. MockDEX Real HTS Transfers — `INSUFFICIENT_GAS` on `executeSwap` After v2 Deploy
+### 16. MockDEX Real HTS Transfers — `INSUFFICIENT_GAS` on `executeSwap` After v2 Deploy
 **Symptom:** After redeploying `MockDEX.sol` v2 (with real HTS precompile calls), the TradeApprovalModal produced `INSUFFICIENT_GAS` errors. Gas of 300,000 was sufficient for the old simulated MockDEX but not for the new one that calls HTS precompile (0x167) for token transfers.
 **Root Cause:** HTS precompile calls inside `executeSwap` (real tUSDC transfers via `IHederaTokenService.transferToken`) consume significantly more gas than the old reserve-only MockDEX.
 **Resolution:** Gas limit increased to `800,000` in `TradeApprovalModal.tsx` (already set; confirmed sufficient). Backend `tradeExecutor.ts` also uses `800000` gas and `1200 gwei` gas price.
 
-### 22. `TypeError: Cannot read properties of undefined (reading 'reduce')` on Marketplace Detail Page
+### 17. `TypeError: Cannot read properties of undefined (reading 'reduce')` on Marketplace Detail Page
 **Symptom:** Navigating to `/marketplace/[id]` (clicking "View" on any listed agent) threw a React render crash: `TypeError: Cannot read properties of undefined (reading 'reduce')`.
 **Root Cause:** `MarketplaceDetailPage` computed `buySell` by calling `listing.recentSignals.reduce(...)` directly. When the API response returns `recentSignals` as `null` or omits the field entirely (no prior trade signals), `.reduce` is called on `undefined`, crashing the render.
 **Resolution:** Added a safe fallback in `apps/web/src/app/marketplace/[id]/page.tsx`:
@@ -152,7 +125,7 @@ const buySell = signals.reduce((acc, s) => { ... }, { buy: 0, sell: 0 });
 ```
 All three usages of `listing.recentSignals` (reduce, `.length > 0`, `.slice`) were updated to use the `signals` local variable.
 
-### 23. "List as NFT" Had No HashPack Popup — Silent Backend-Only Call
+### 18. "List as NFT" Had No HashPack Popup — Silent Backend-Only Call
 
 **Symptom:** Clicking "List as NFT" on the agent dashboard called the backend silently with no user-visible wallet interaction. The operator minted the NFT, but the user never approved anything in HashPack, and the NFT could not be transferred to their account (TOKEN_NOT_ASSOCIATED).
 **Root Cause:** `listOnMarketplace()` in `agents/[agentId]/page.tsx` made a direct `fetch()` POST to `/api/marketplace/list` with no prior `TokenAssociateTransaction`, so:
@@ -165,7 +138,7 @@ If the wallet is already associated, the `TOKEN_ALREADY_ASSOCIATED` error is sil
 
 ---
 
-### 24. Four TypeScript Compilation Errors After Trading Platform Upgrade
+### 19. Four TypeScript Compilation Errors After Trading Platform Upgrade
 
 **Symptom (4 separate errors in one batch):**
 1. `apps/web/src/app/marketplace/page.tsx` — `Property 'profitFactor' does not exist on type 'Listing'` (and same for `sharpeRatio`, `avgWin`, `avgLoss`) — 8 errors total.

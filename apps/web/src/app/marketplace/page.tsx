@@ -141,11 +141,11 @@ export default function MarketplacePage() {
             Deploy an agent and list it as an NFT strategy!
           </p>
           <Link
-            href="/create"
+            href="/agents"
             className="inline-block mt-4 text-sm cursor-pointer"
             style={{ color: '#00A9BA' }}
           >
-            Create Agent →
+            View Agents →
           </Link>
         </div>
       ) : (
@@ -231,17 +231,15 @@ export default function MarketplacePage() {
                       <ShieldCheckIcon size={10} />
                       <span>{agent.executions} HCS decisions</span>
                     </div>
-                    <a
-                      href={agent.hashscanUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={e => e.stopPropagation()}
-                      className="flex items-center gap-1 text-[10px] hover:text-white transition-colors"
-                      style={{ color: '#334155' }}
+                    <button
+                      type="button"
+                      onClick={e => { e.preventDefault(); e.stopPropagation(); window.open(agent.hashscanUrl, '_blank', 'noopener,noreferrer'); }}
+                      className="flex items-center gap-1 text-[10px] hover:text-white transition-colors cursor-pointer"
+                      style={{ color: '#334155', background: 'none', border: 'none', padding: 0 }}
                     >
                       HashScan
                       <ExternalLinkIcon size={9} />
-                    </a>
+                    </button>
                   </div>
                 </div>
               </Link>
