@@ -130,21 +130,31 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
     ]).then(([agentData, historyData]) => {
       setAgent(agentData);
       setHistory(historyData.history ?? []);
-      // If agent has a dedicated account, fetch its balances from Mirror Node
+      // If agent has a dedicated account, fetch its balances from Mirror Node.
+      // Pass the connected wallet accountId so tUSDT is read from the user's wallet
+      // (manual swaps credit the signer, not the agent account).
       if (agentData.agentAccountId) {
-        fetchAgentPortfolio(agentData.agentAccountId, agentData.tradingBudgetHbar).then(setPortfolio);
+        const walletAcct = useWalletStore.getState().accountId ?? undefined;
+        fetchAgentPortfolio(agentData.agentAccountId, agentData.tradingBudgetHbar, walletAcct).then(setPortfolio);
       }
     }).catch(console.error)
       .finally(() => setLoading(false));
   }, [agentId]);
 
-  async function fetchAgentPortfolio(agentAcctId: string, budgetHbar: number): Promise<AgentPortfolio> {
+  // userAccountId: when provided (MANUAL mode), tUSDT is queried from the user's
+  // wallet instead of the agent account, because manual swaps credit the signer.
+  async function fetchAgentPortfolio(
+    agentAcctId: string,
+    budgetHbar: number,
+    userAccountId?: string,
+  ): Promise<AgentPortfolio> {
     const base = `https://${NETWORK}.mirrornode.hedera.com/api/v1`;
     const tUSDTId = process.env.NEXT_PUBLIC_TEST_USDT_TOKEN_ID;
+    const tusdtAcct = userAccountId || agentAcctId;
     try {
       const [accRes, tokRes] = await Promise.all([
         fetch(`${base}/accounts/${agentAcctId}`),
-        tUSDTId ? fetch(`${base}/accounts/${agentAcctId}/tokens?token.id=${tUSDTId}`) : Promise.resolve(null),
+        tUSDTId ? fetch(`${base}/accounts/${tusdtAcct}/tokens?token.id=${tUSDTId}`) : Promise.resolve(null),
       ]);
       const accData = await accRes.json() as any;
       const hbar    = (accData?.balance?.balance ?? 0) / 1e8;
@@ -175,7 +185,7 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
       if (!res.ok) throw new Error(data.error || 'Withdrawal failed');
       alert(`Withdrawal complete! HBAR and tUSDT sent back to your wallet.\nTx: ${data.txIds?.[0] ?? ''}`);
       // Refresh portfolio
-      const p = await fetchAgentPortfolio(agent.agentAccountId, agent.tradingBudgetHbar);
+      const p = await fetchAgentPortfolio(agent.agentAccountId, agent.tradingBudgetHbar, accountId ?? undefined);
       setPortfolio(p);
       setAgent(a => a ? { ...a, tradingBudgetHbar: 0 } : a);
     } catch (err: any) {
@@ -512,11 +522,11 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
                 <p className="text-lg font-bold font-mono" style={{ color: '#E2E8F0' }}>{portfolio.hbar.toFixed(4)}</p>
                 <p className="text-[10px]" style={{ color: '#475569' }}>ℏ</p>
               </div>
-              {/* tUSDT balance */}
+              {/* tUSDT balance — sourced from user wallet (manual swaps credit the signer) */}
               <div className="rounded-xl p-3" style={{ background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.12)' }}>
                 <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: '#334155' }}>tUSDT Balance</p>
                 <p className="text-lg font-bold font-mono" style={{ color: '#10B981' }}>{portfolio.tusdt.toFixed(4)}</p>
-                <p className="text-[10px]" style={{ color: '#475569' }}>tUSDT</p>
+                <p className="text-[10px]" style={{ color: '#475569' }}>tUSDT (wallet)</p>
               </div>
               {/* Budget */}
               <div className="rounded-xl p-3" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
@@ -850,9 +860,10 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
               .then(r => r.json())
               .then(d => setHistory(d.history ?? []))
               .catch(() => {});
-            // Refresh agent portfolio (tUSDC balance changed)
+            // Refresh agent portfolio — pass user wallet so tUSDT balance
+            // reflects the signer's account (manual swaps credit the signer)
             if (agent.agentAccountId) {
-              fetchAgentPortfolio(agent.agentAccountId, agent.tradingBudgetHbar)
+              fetchAgentPortfolio(agent.agentAccountId, agent.tradingBudgetHbar, accountId ?? undefined)
                 .then(setPortfolio);
             }
           }}
