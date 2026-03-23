@@ -435,6 +435,79 @@ router.post('/:agentId/run', async (req: Request, res: Response) => {
   }
 });
 
+// ── POST /api/agents/:id/log-execution-result ──────────────────────
+/**
+ * Called by the frontend TradeApprovalModal AFTER the user approves a MANUAL
+ * trade in HashPack and the swap confirms on-chain.
+ * Logs the EXECUTION_RESULT back to HCS (completing the audit trail:
+ * decision seq#N → swap on-chain → execution result seq#N+1).
+ * Also updates the corresponding DB Execution row with the tx details.
+ */
+router.post('/:agentId/log-execution-result', async (req: Request, res: Response) => {
+  try {
+    const agentId = String(req.params.agentId);
+    const {
+      txHash, signal, direction, hcsSequenceNum,
+      hcsTopicId: bodyTopicId, amountIn, amountOut, slippageBps, price,
+    } = req.body as {
+      txHash:         string;
+      signal:         string;
+      direction:      string;
+      hcsSequenceNum: string;
+      hcsTopicId:     string;
+      amountIn:       string;
+      amountOut:      string;
+      slippageBps:    number;
+      price:          number;
+    };
+
+    const agent = await prisma.agent.findUnique({ where: { id: agentId } });
+    if (!agent) return res.status(404).json({ error: 'Agent not found' });
+
+    const hcsTopicId = bodyTopicId || agent.hcsTopicId;
+
+    // ── Log execution result to HCS ──────────────────────────────────
+    const { submitAgentDecision, createHederaClient } = await import('@tradeagent/hedera');
+    const client = createHederaClient();
+    try {
+      await submitAgentDecision(client, hcsTopicId, {
+        signal:     'EXECUTION_RESULT' as any,
+        agentId,
+        price,
+        confidence: 100,
+        reasoning: [
+          `Manual swap approved by wallet owner.`,
+          `Direction: ${direction}.`,
+          `Amount in: ${amountIn}.`,
+          `Amount out: ${amountOut}.`,
+          `Slippage: ${(slippageBps / 100).toFixed(2)}%.`,
+          `TxHash: ${txHash}.`,
+          `Based on HCS decision #${hcsSequenceNum}.`,
+        ].join(' '),
+        indicators: {
+          amountIn:    Number(amountIn),
+          amountOut:   Number(amountOut),
+          slippageBps: slippageBps,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } finally {
+      client.close();
+    }
+
+    // ── Update the matching DB Execution row ──────────────────────────
+    await prisma.execution.updateMany({
+      where:  { agentId, hcsSequenceNumber: hcsSequenceNum, swapTxId: null },
+      data:   { swapTxId: txHash, fillPrice: price, slippage: slippageBps / 100 },
+    });
+
+    res.json({ ok: true, message: 'Execution result logged to HCS' });
+  } catch (err) {
+    console.error('[log-execution-result] Error:', err);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // ── PUT /api/agents/:id/pause ─────────────────────────────────────
 router.put('/:agentId/pause', async (req: Request, res: Response) => {
   try {

@@ -63,6 +63,12 @@ export function TradeApprovalModal({
 
   // ── Fetch live quote on mount ──────────────────────────────────
   useEffect(() => {
+    // If env var isn't configured, clear the loading state immediately
+    // so the "Approve Swap" button is never permanently disabled.
+    if (!mockDexAddr || amount <= 0n) {
+      setQuoteLoading(false);
+      return;
+    }
     async function loadQuote() {
       setQuoteLoading(true);
       try {
@@ -81,7 +87,7 @@ export function TradeApprovalModal({
         setQuoteLoading(false);
       }
     }
-    if (mockDexAddr && amount > 0n) loadQuote();
+    loadQuote();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mockDexAddr, direction, amount.toString()]);
 
@@ -161,6 +167,23 @@ export function TradeApprovalModal({
 
       const txIdStr = response.transactionId?.toString() ?? '';
       setTxHash(txIdStr);
+
+      // ── Log execution result to HCS (completes the audit trail for MANUAL trades) ──
+      fetch(`${API_URL}/api/agents/${agentId}/log-execution-result`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          txHash:          txIdStr,
+          signal,
+          direction,
+          hcsSequenceNum,
+          hcsTopicId,
+          amountIn:        amount.toString(),
+          amountOut:       quote?.amountOut?.toString() ?? '0',
+          slippageBps:     quote?.slippageBps ?? 0,
+          price,
+        }),
+      }).catch(() => {});
 
       // Audit log (fire-and-forget)
       fetch(`${API_URL}/api/transactions`, {

@@ -268,16 +268,19 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
       };
       setHistory(h => [newEntry, ...h]);
 
-      // If we got a trade signal and we're NOT in a dry run, trigger the modal
+      // MANUAL mode: show TradeApprovalModal so the user signs + executes the swap
+      // in their own HashPack wallet. tUSDC lands in their connected wallet.
       if (!dryRun && (data.signal === 'BUY' || data.signal === 'SELL')) {
-        // Deterministic amounts for demo/testnet
-        const tradeAmount = data.signal === 'SELL' ? BigInt(5 * 1e8) : BigInt(1 * 1e6); // 5 HBAR or 1 USDT
+        // 5 HBAR for SELL (HBAR → tUSDC) · 1 tUSDC for BUY (tUSDC → HBAR)
+        const tradeAmount = data.signal === 'SELL'
+          ? BigInt(Math.round(5 * 1e8))   // 5 HBAR in tinybars
+          : BigInt(Math.round(1 * 1e6));  // 1 tUSDC in micro-USDC
         setPendingTrade({
-          signal: data.signal,
-          amount: tradeAmount,
-          price: data.price,
-          confidence: data.confidence,
-          hcsSequenceNum: data.hcsSequenceNumber
+          signal:         data.signal as 'BUY' | 'SELL',
+          amount:         tradeAmount,
+          price:          data.price,
+          confidence:     data.confidence,
+          hcsSequenceNum: String(data.hcsSequenceNumber),
         });
       }
     } catch (e) {
@@ -838,10 +841,20 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
         <TradeApprovalModal
           {...pendingTrade}
           agentId={agentId}
+          agentName={agent.name}
           hcsTopicId={agent.hcsTopicId}
           onApprove={() => {
             setPendingTrade(null);
-            // Optionally refresh history here
+            // Refresh HCS history so the EXECUTION_RESULT (seq#N+1) appears
+            fetch(`${API_URL}/api/agents/${agentId}/history?limit=50`)
+              .then(r => r.json())
+              .then(d => setHistory(d.history ?? []))
+              .catch(() => {});
+            // Refresh agent portfolio (tUSDC balance changed)
+            if (agent.agentAccountId) {
+              fetchAgentPortfolio(agent.agentAccountId, agent.tradingBudgetHbar)
+                .then(setPortfolio);
+            }
           }}
           onReject={() => setPendingTrade(null)}
         />
