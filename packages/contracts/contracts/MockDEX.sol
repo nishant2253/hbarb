@@ -246,14 +246,12 @@ contract MockDEX {
         address to,
         int64 amount
     ) internal {
-        // Only call HTS precompile on Hedera — skip on local EVM forks
-        uint256 codeSize;
-        address precompile = HTS_PRECOMPILE;
-        assembly { codeSize := extcodesize(precompile) }
-        if (codeSize > 0) {
-            int64 code = IHederaTokenService(HTS_PRECOMPILE).transferToken(token, from, to, amount);
-            require(code == 22, "HTS transfer failed");
-        }
+        // Always call the HTS precompile directly — on Hedera testnet/mainnet,
+        // extcodesize(0x167) returns 0 because system contracts are native node
+        // handlers, not deployed EVM bytecode. The old extcodesize guard was
+        // silently skipping all token transfers on-chain.
+        int64 code = IHederaTokenService(HTS_PRECOMPILE).transferToken(token, from, to, amount);
+        require(code == 22, "HTS transfer failed");
     }
 
     function _getHBARPriceUSDCents() internal returns (uint256 price) {
