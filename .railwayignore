@@ -1,0 +1,23 @@
+# Exclude frontend — not needed on Railway (deployed to Vercel)
+apps/web
+
+# Exclude contracts — compile artifacts not needed at runtime
+packages/contracts
+
+# Exclude build artifacts and caches
+.next
+dist
+node_modules/.cache
+
+# Exclude dev/test files
+**/*.test.ts
+**/*.spec.ts
+e2e
+coverage
+
+# Exclude local docs and generated files
+*.pdf
+*.pptx
+*.txt
+fill_pptx.py
+generate_pdf.py
