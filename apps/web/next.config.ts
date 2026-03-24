@@ -1,10 +1,12 @@
 import type { NextConfig } from 'next';
 
+const rawApiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+// Ensure the URL always has a protocol (guards against env var set without https://)
+const API_URL = rawApiUrl.startsWith('http') ? rawApiUrl : `https://${rawApiUrl}`;
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  experimental: {
-    turbo: {},
-  },
+  turbopack: {},
   // Transpile Hedera packages so webpack (not Node ESM) handles their directory imports.
   // @hashgraph/hedera-wallet-connect uses `import from './lib'` (no .js extension)
   // which fails in Node.js ESM but is resolved fine by webpack.
@@ -34,7 +36,7 @@ const nextConfig: NextConfig = {
     return [
       {
         source: '/api/:path*',
-        destination: `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/:path*`,
+        destination: `${API_URL}/api/:path*`,
       },
     ];
   },
