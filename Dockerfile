@@ -12,6 +12,8 @@ WORKDIR /app
 # ── 1. Copy package manifests first (layer cache for npm install) ─
 COPY package.json package-lock.json ./
 COPY apps/api/package.json           ./apps/api/
+# apps/web/package.json must exist — root workspace glob is "apps/*"
+COPY apps/web/package.json           ./apps/web/
 COPY packages/hedera/package.json    ./packages/hedera/
 COPY packages/shared/package.json    ./packages/shared/
 # contracts package.json needed so npm workspace graph resolves cleanly
@@ -26,14 +28,16 @@ RUN npm install \
       --ignore-scripts=false
 
 # ── 3. Copy source code ───────────────────────────────────────────
-COPY apps/api/       ./apps/api/
+COPY apps/api/        ./apps/api/
 COPY packages/hedera/ ./packages/hedera/
 COPY packages/shared/ ./packages/shared/
 
 # ── 4. Build workspace packages then API (strict order) ──────────
+# Each RUN layer persists dist/ for the next step — no COPY overwrites.
 RUN npm run build --workspace=@tradeagent/shared
 RUN npm run build --workspace=@tradeagent/hedera
-RUN cd apps/api && npx prisma generate && npm run build
+# API build script already runs prisma generate internally
+RUN npm run build --workspace=@tradeagent/api
 
 # ── 5. Prune dev deps AFTER all builds are done ───────────────────
 # dist/ folders in packages/* are NOT in node_modules, so prune
