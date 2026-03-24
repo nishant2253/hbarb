@@ -1,0 +1,16 @@
+[phases.install]
+# Only install API + its workspace dependencies — skip apps/web (Next.js = ~1.8GB)
+cmds = [
+  "npm install --workspace=@tradeagent/shared --workspace=@tradeagent/hedera --workspace=@tradeagent/api --include-workspace-root --ignore-scripts=false"
+]
+
+[phases.build]
+cmds = [
+  "npm run build --workspace=@tradeagent/shared",
+  "npm run build --workspace=@tradeagent/hedera",
+  "cd apps/api && npx prisma generate && npm run build",
+  "npm prune --omit=dev"
+]
+
+[start]
+cmd = "node apps/api/dist/index.js"
