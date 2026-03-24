@@ -28,6 +28,8 @@ RUN npm install \
       --ignore-scripts=false
 
 # ── 3. Copy source code ───────────────────────────────────────────
+# Root tsconfig.json must be present — shared/hedera tsconfigs extend it
+COPY tsconfig.json    ./
 COPY apps/api/        ./apps/api/
 COPY packages/hedera/ ./packages/hedera/
 COPY packages/shared/ ./packages/shared/
