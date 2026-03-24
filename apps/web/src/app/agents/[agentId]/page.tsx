@@ -224,11 +224,14 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
             .setTokenIds([strategyTokenId])
             .setMaxTransactionFee(new Hbar(2))
             .freezeWithSigner(signer);
-          const assocResp = await assocTx.executeWithSigner(signer);
-          await assocResp.getReceiptWithSigner(signer);
+          await assocTx.executeWithSigner(signer);
+          // getReceiptWithSigner throws _requireFrozen for TokenAssociateTransaction
+          // with DAppSigner (same Bug #5 as TransferTransaction). Use delay instead.
+          await new Promise(r => setTimeout(r, 3000));
         } catch (assocErr: any) {
           if (!assocErr?.message?.includes('TOKEN_ALREADY_ASSOCIATED') &&
-              !assocErr?.status?.toString().includes('TOKEN_ALREADY_ASSOCIATED')) {
+              !assocErr?.status?.toString().includes('TOKEN_ALREADY_ASSOCIATED') &&
+              !assocErr?.message?.includes('frozen')) {
             throw assocErr;
           }
         }
