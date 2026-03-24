@@ -13,4 +13,4 @@ cmds = [
 ]
 
 [start]
-cmd = "node apps/api/dist/index.js"
+cmd = "node apps/api/dist/apps/api/src/index.js"
